@@ -173,6 +173,33 @@
         "access.token.signed.response.alg": "RS256",
         "use.jwks.url": "true"
       }
+    },
+    {
+      "clientId": "oauth2-proxy",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "oauth2-proxy-secret-key-change-in-production",
+      "publicClient": false,
+      "redirectUris": [
+        "http://localhost:4180/oauth2/callback",
+        "http://localhost:4180/*"
+      ],
+      "webOrigins": [
+        "http://localhost:4180",
+        "*"
+      ],
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:4180/*",
+        "pkce.code.challenge.method": "S256",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "access.token.lifespan": "300"
+      }
     }
   ],
   "components": {

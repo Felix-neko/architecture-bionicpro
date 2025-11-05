@@ -50,6 +50,8 @@ def context(browser: Browser, browser_context_args):
 @pytest.fixture(scope="function")
 def page(context: BrowserContext):
     """Фикстура для создания страницы браузера."""
+    # Очищаем cookies перед каждым тестом для изоляции
+    context.clear_cookies()
     page = context.new_page()
     yield page
     page.close()
@@ -57,8 +59,8 @@ def page(context: BrowserContext):
 
 @pytest.fixture(scope="session")
 def frontend_url() -> str:
-    """URL фронтенд-сервера."""
-    return "http://localhost:5173"
+    """URL фронтенд-сервера через OAuth2 Proxy."""
+    return "http://localhost:4180"
 
 
 @pytest.fixture(scope="session")

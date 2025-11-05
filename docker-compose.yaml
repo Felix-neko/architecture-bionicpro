@@ -58,6 +58,44 @@ services:
       - "8081:80"
     depends_on:
       - openldap-zambia
+  # OAuth2 Proxy как reverse proxy для фронтенда и бэкенда
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest  # Используем последнюю версию
+    network_mode: "host"  # Используем host network для доступа к localhost:5173
+    command:
+      - --provider=oidc  # Используем OpenID Connect провайдер
+      - --provider-display-name=Keycloak  # Отображаемое имя провайдера
+      - --client-id=oauth2-proxy  # ID клиента в Keycloak
+      - --client-secret=oauth2-proxy-secret-key-change-in-production  # Секрет клиента
+      - --code-challenge-method=S256  # Используем PKCE с SHA256
+      - --oidc-issuer-url=http://localhost:8080/realms/reports-realm  # URL издателя токенов
+      - --redirect-url=http://localhost:4180/oauth2/callback  # URL для callback после авторизации
+      - --cookie-secret=CHANGE_ME_TO_32_CHAR_RANDOM_STRING_12345678  # Секрет для шифрования cookie (32 символа)
+      - --cookie-secure=false  # Отключаем secure cookie для разработки (HTTP)
+      - --cookie-httponly=true  # HttpOnly cookie для безопасности
+      - --cookie-samesite=lax  # SameSite=Lax для защиты от CSRF
+      - --cookie-name=_oauth2_proxy  # Имя cookie
+      # Не указываем cookie-domain, чтобы использовался домен запроса
+      - --email-domain=*  # Разрешаем любые email домены
+      - --insecure-oidc-allow-unverified-email=true  # Разрешаем неподтвержденные email (для dev)
+      - --upstream=http://localhost:5173  # Проксируем на фронтенд на хосте
+      - --http-address=0.0.0.0:4180  # Слушаем на всех интерфейсах
+      - --skip-provider-button=false  # Показываем кнопку входа
+      - --pass-access-token=true  # Передаем access token в заголовке X-Forwarded-Access-Token
+      - --pass-authorization-header=true  # Передаем Authorization заголовок
+      - --set-authorization-header=true  # Устанавливаем Authorization заголовок с access token
+      - --cookie-refresh=5m  # Обновляем cookie каждые 5 минут
+      - --cookie-expire=24h  # Cookie истекает через 24 часа
+      - --session-store-type=cookie  # Храним сессию в cookie
+      - --scope=openid profile email  # Запрашиваемые scope
+      - --insecure-oidc-skip-issuer-verification=true  # Пропускаем проверку issuer (для dev)
+      - --ssl-insecure-skip-verify=true  # Пропускаем проверку SSL (для dev)
+      - --skip-auth-regex=^/oauth2/  # Не требуем авторизацию для /oauth2/* (служебные эндпоинты)
+      - --reverse-proxy=true  # Работаем в режиме reverse proxy
+      - --real-client-ip-header=X-Real-IP  # Заголовок для получения реального IP клиента
+    # В host network mode не нужны ports и extra_hosts
+    restart: unless-stopped  # Автоматически перезапускаем при падении
+  
   frontend:
     build:
       context: ./frontend

@@ -36,30 +36,13 @@ export default function App() {
 
   // При загрузке компонента получаем информацию о пользователе
   useEffect(() => {
-    fetchUserInfo();
+    // OAuth2-proxy автоматически управляет авторизацией
+    // Если пользователь не авторизован, он будет редиректнут на страницу входа
+    // Если авторизован, мы просто показываем приложение
+    setLoadingUser(false);
+    // Можно попробовать получить информацию из заголовков, но это опционально
+    setUserInfo({ email: 'Authorized User' });
   }, []);
-
-  // Функция для получения информации о пользователе из oauth2-proxy
-  const fetchUserInfo = async () => {
-    try {
-      // oauth2-proxy предоставляет эндпоинт /oauth2/userinfo для получения информации о пользователе
-      const response = await fetch('/oauth2/userinfo', {
-        credentials: 'include', // Включаем cookies
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setUserInfo(data);
-      } else {
-        // Если не авторизованы, oauth2-proxy автоматически редиректнет на страницу входа
-        console.error('Not authenticated');
-      }
-    } catch (err) {
-      console.error('Failed to fetch user info:', err);
-    } finally {
-      setLoadingUser(false);
-    }
-  };
 
   // Функция для вызова бэкенда /reports
   const fetchReports = async () => {
