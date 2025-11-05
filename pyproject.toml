@@ -7,5 +7,8 @@ dependencies = [
     "fastapi>=0.121.0",
     "httpx>=0.27.0",
     "pyjwt[crypto]>=2.9.0",
+    "pytest>=8.4.2",
+    "pytest-playwright>=0.7.1",
+    "requests>=2.31.0",
     "uvicorn>=0.38.0",
 ]

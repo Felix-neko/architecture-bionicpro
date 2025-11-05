@@ -87,6 +87,11 @@ entries:
       # нужно использовать keycloak:8080 для server-to-server коммуникации
       access_token_url: http://keycloak:8080/realms/reports-realm/protocol/openid-connect/token
       
+      # ⚠️ ВАЖНО: Переопределяем profile (userinfo) endpoint на внутренний адрес
+      # Keycloak возвращает localhost:8080 в .well-known, но из контейнера Authentik
+      # нужно использовать keycloak:8080 для server-to-server коммуникации
+      profile_url: http://keycloak:8080/realms/reports-realm/protocol/openid-connect/userinfo
+      
       # Дополнительные OAuth scopes для запроса у Keycloak
       # openid - обязательный scope для OIDC
       # profile - запрашивает профильную информацию (имя, фамилия и т.д.)
