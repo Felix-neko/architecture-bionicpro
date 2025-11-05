@@ -818,11 +818,13 @@ class TestMultipleUsersAndLogout:
         1. Входим под prothetic1
         2. Выходим через кнопку "Выйти"
         3. Проверяем, что вернулись на страницу входа
-        4. Снова входим под prothetic1
-        5. Проверяем, что вход успешен
+        4. Снова нажимаем "Войти через Authentik" -> Keycloak
+        5. Входим снова (Keycloak может запомнить сессию через SSO)
+        6. Проверяем, что вход успешен
         
-        Примечание: Keycloak использует SSO и может запоминать сессию.
-        Для полной очистки сессии требуется настройка backchannel logout.
+        Примечание: Keycloak использует SSO и запоминает сессию.
+        Для полной очистки сессии Keycloak требуется прямой logout в Keycloak,
+        но это невозможно, так как пользователь входит через Authentik (нет cookie Keycloak).
         """
         print(f"\n=== Тест: Проверка очистки сессии Keycloak после logout ===")
         
@@ -880,21 +882,24 @@ class TestMultipleUsersAndLogout:
         print(f"   Текущий URL после logout: {current_url}")
         
         # Ждем, пока вернемся на страницу входа
-        if "localhost:9000" in current_url or "localhost:8080" in current_url:
-            print("   Находимся на Authentik или Keycloak, ждем редиректа на фронтенд...")
-            try:
-                page.wait_for_url(f"{frontend_url}/**", timeout=15000)
-                print(f"   Редирект выполнен: {page.url}")
-            except:
-                print("   Автоматического редиректа нет, переходим вручную")
+        # Authentik должен редиректнуть на фронтенд
+        try:
+            page.wait_for_url(f"{frontend_url}/**", timeout=15000)
+            print(f"   Редирект выполнен: {page.url}")
+        except:
+            print(f"   Таймаут редиректа, текущий URL: {page.url}")
+            # Если мы все еще на Authentik или Keycloak, переходим на фронтенд вручную
+            if "localhost:9000" in page.url or "localhost:8080" in page.url:
+                print("   Переходим на фронтенд вручную")
                 page.goto(frontend_url)
                 page.wait_for_load_state("networkidle")
-        else:
-            print("   Уже на фронтенде")
-            page.goto(frontend_url)
-            page.wait_for_load_state("networkidle")
         
         time.sleep(2)
+        
+        # Проверяем, что мы на странице входа
+        current_url = page.url
+        print(f"   Финальный URL: {current_url}")
+        
         login_button_after_logout = page.get_by_role("button", name="Войти через Authentik")
         expect(login_button_after_logout).to_be_visible(timeout=10000)
         print("✓ Выход выполнен успешно")
@@ -903,45 +908,62 @@ class TestMultipleUsersAndLogout:
         print("3. Повторный вход")
         login_button_after_logout.click()
         
-        # Ждем редиректа на Authentik или автоматического входа
+        # Ждем редиректа на Authentik
+        page.wait_for_url("**/localhost:9000/**", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        time.sleep(2)
+        
+        # Нажимаем Keycloak
+        print("   На странице Authentik, нажимаем Keycloak")
+        keycloak_button = page.locator('a:has-text("Keycloak"), button:has-text("Keycloak")').first
+        keycloak_button.click()
         time.sleep(3)
+        
+        # Шаг 4: Входим снова (Keycloak может автоматически войти через SSO или показать форму)
+        print("4. Повторный вход")
         current_url = page.url
         print(f"   Текущий URL: {current_url}")
         
-        # Если мы на Authentik, нажимаем Keycloak
-        if "localhost:9000" in current_url:
-            print("   На странице Authentik, нажимаем Keycloak")
-            keycloak_button = page.locator('a:has-text("Keycloak"), button:has-text("Keycloak")').first
-            keycloak_button.click()
-            time.sleep(3)
-            current_url = page.url
-            print(f"   Текущий URL после Keycloak: {current_url}")
-        
-        # Если мы на Keycloak, вводим учетные данные (если показывается форма)
+        # Проверяем, на какой странице мы находимся
         if "keycloak" in current_url.lower() or "8080" in current_url:
+            # Мы на Keycloak - проверяем, показывает ли он форму входа
             username_field = page.locator('input[name="username"], input[id="username"]').first
             if username_field.is_visible(timeout=3000):
                 print("   Keycloak показывает форму входа")
+                # Вводим учетные данные
                 username_field.fill(test_user_credentials["username"])
                 page.locator('input[name="password"], input[id="password"]').first.fill(test_user_credentials["password"])
                 page.locator('input[type="submit"], button[type="submit"]').first.click()
                 print(f"   Введены учетные данные: {test_user_credentials['username']}")
                 time.sleep(2)
             else:
-                print("   Keycloak не показал форму (SSO)")
+                print("   Keycloak не показал форму (SSO - автоматический вход)")
+            
+            # Ждем возврата на Authentik
+            try:
+                continue_button = page.get_by_role("button", name="Войти")
+                if continue_button.is_visible(timeout=3000):
+                    continue_button.click()
+                    time.sleep(2)
+            except:
+                pass
+            
+            # Ждем возврата на фронтенд
+            try:
+                page.wait_for_url(f"{frontend_url}/**", timeout=20000)
+            except:
+                pass
+            time.sleep(3)
+        else:
+            # Мы уже на фронтенде - Keycloak автоматически вошел через SSO
+            print("   Keycloak автоматически вошел (SSO)")
+            time.sleep(2)
         
-        # Ждем возврата на фронтенд
-        try:
-            page.wait_for_url(f"{frontend_url}/**", timeout=20000)
-        except:
-            pass
-        
-        time.sleep(3)
-        
-        # Шаг 4: Проверяем, что снова авторизованы
-        print("4. Проверяем повторную авторизацию")
+        # Шаг 5: Проверяем, что снова авторизованы
+        print("5. Проверяем повторную авторизацию")
         success_indicator = page.locator('text=/Вы авторизованы|✓ Вы авторизованы/i')
         expect(success_indicator).to_be_visible(timeout=10000)
         print("✓ Повторная авторизация выполнена успешно")
         
-        print(f"=== Тест завершен успешно ===\n")
+        print(f"\n=== Тест завершен успешно ===")
+        print("ПРИМЕЧАНИЕ: Keycloak использует SSO и может запоминать сессию.\n")

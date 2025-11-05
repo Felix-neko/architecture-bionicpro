@@ -266,7 +266,7 @@ export default function App() {
   };
   /**
    * Выполняет выход из системы
-   * Очищает сессии в Keycloak и Authentik
+   * Делает logout в Authentik
    */
   const handleLogout = async () => {
     console.log('[Logout] Starting logout process');
@@ -277,25 +277,22 @@ export default function App() {
       setUserInfo(null);
       setAccessToken(null);
       localStorage.removeItem('access_token');
+      sessionStorage.clear();  // Очищаем все данные сессии
       console.log('[Logout] Local state cleared');
       
-      // Делаем logout в Keycloak через прямой редирект
-      // Keycloak очистит свою сессию и редиректнет на Authentik
-      const authentikLogoutUrl = new URL(`${AUTHENTIK_URL}/application/o/${CLIENT_ID}/end-session/`);
-      authentikLogoutUrl.searchParams.append('post_logout_redirect_uri', window.location.origin);
+      // Делаем logout в Authentik
+      // Authentik очистит свою сессию и редиректнет обратно на фронтенд
+      const logoutUrl = new URL(`${AUTHENTIK_URL}/application/o/${CLIENT_ID}/end-session/`);
+      logoutUrl.searchParams.append('post_logout_redirect_uri', window.location.origin + '/');
       
-      const keycloakLogoutUrl = new URL('http://localhost:8080/realms/reports-realm/protocol/openid-connect/logout');
-      keycloakLogoutUrl.searchParams.append('post_logout_redirect_uri', authentikLogoutUrl.toString());
+      console.log('[Logout] Redirecting to Authentik logout');
       
-      console.log('[Logout] Redirecting to Keycloak logout');
-      
-      // Перенаправляем на Keycloak logout
-      // Keycloak -> Authentik logout -> Frontend
-      window.location.href = keycloakLogoutUrl.toString();
+      // Перенаправляем на Authentik logout
+      window.location.replace(logoutUrl.toString());
     } catch (error) {
       console.error('[Logout] Error:', error);
       // В случае ошибки все равно перенаправляем на главную
-      window.location.href = window.location.origin;
+      window.location.replace(window.location.origin + '/');
     }
   };
 

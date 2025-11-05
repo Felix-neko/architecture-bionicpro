@@ -205,10 +205,12 @@
       "publicClient": false,
       "redirectUris": [
         "http://localhost:9000/*",
-        "http://localhost:9000/source/oauth/callback/keycloak/*"
+        "http://localhost:9000/source/oauth/callback/keycloak/*",
+        "http://localhost:5173/*"
       ],
       "webOrigins": [
         "http://localhost:9000",
+        "http://localhost:5173",
         "*"
       ],
       "directAccessGrantsEnabled": true,
@@ -217,7 +219,7 @@
       "serviceAccountsEnabled": true,
       "protocol": "openid-connect",
       "attributes": {
-        "post.logout.redirect.uris": "http://localhost:9000/*",
+        "post.logout.redirect.uris": "http://localhost:9000/* http://localhost:5173/*",
         "pkce.code.challenge.method": "S256",
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false",
