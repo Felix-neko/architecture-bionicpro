@@ -14,4 +14,5 @@ $HOME/go/bin/oauth2-proxy \
   --insecure-oidc-allow-unverified-email  \
   --standard-logging \
   --auth-logging \
-  --request-logging
+  --request-logging \
+  --prompt=login

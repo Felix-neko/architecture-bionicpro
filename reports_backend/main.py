@@ -160,6 +160,11 @@ async def get_reports(payload: Dict[str, Any] = Depends(verify_jwt)) -> Dict[str
     return {"payload": payload}
 
 
+@app.get("/")
+async def get_index() -> str:
+    return "Hello world"
+
+
 # Запускаем приложение, если файл выполняется напрямую
 if __name__ == "__main__":
     # Импортируем asyncio и uvicorn для запуска сервера
