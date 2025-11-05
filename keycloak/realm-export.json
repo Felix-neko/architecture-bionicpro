@@ -1,6 +1,20 @@
 {
   "realm": "reports-realm",
   "enabled": true,
+  "groups": [
+    {
+      "name": "users",
+      "path": "/users"
+    },
+    {
+      "name": "prothetic_users",
+      "path": "/prothetic_users"
+    },
+    {
+      "name": "administrators",
+      "path": "/administrators"
+    }
+  ],
   "roles": {
     "realm": [
       {
@@ -101,6 +115,10 @@
       ],
       "realmRoles": [
         "prothetic_users"
+      ],
+      "groups": [
+        "/prothetic_users",
+        "/users"
       ]
     },
     {
@@ -118,6 +136,10 @@
       ],
       "realmRoles": [
         "prothetic_users"
+      ],
+      "groups": [
+        "/prothetic_users",
+        "/users"
       ]
     },
     {
@@ -199,6 +221,8 @@
         "pkce.code.challenge.method": "S256",
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "true",
         "access.token.lifespan": "3600",
         "client.secret.creation.time": "1730000000"
       },

@@ -90,8 +90,8 @@ def test_user_credentials() -> dict:
     Этот пользователь должен существовать в Keycloak.
     """
     return {
-        "username": "user1",
-        "password": "password123"
+        "username": "prothetic1",
+        "password": "prothetic123"
     }
 
 

@@ -213,6 +213,10 @@ async def get_reports_jwt(payload: Dict[str, Any] = Depends(verify_jwt)) -> Dict
         "username": payload.get("preferred_username") or payload.get("sub"),
         "email": payload.get("email"),
         "groups": payload.get("groups", []),
+        "roles": payload.get("roles", []),
+        "resource_access": payload.get("resource_access", {}),
+        "given_name": payload.get("given_name"),
+        "family_name": payload.get("family_name"),
         "uid": payload.get("sub"),
         "authenticated_via": "JWT Token (Authentik)",
     }

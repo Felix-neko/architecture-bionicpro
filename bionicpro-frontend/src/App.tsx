@@ -94,7 +94,7 @@ export default function App() {
 
   /**
    * Проверяем при загрузке, есть ли OAuth callback в URL
-   * [UPDATE_MARKER_v2]
+   * [UPDATE_MARKER_v4_with_roles]
    */
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -254,7 +254,7 @@ export default function App() {
     authUrl.searchParams.append('client_id', CLIENT_ID);
     authUrl.searchParams.append('redirect_uri', REDIRECT_URI);
     authUrl.searchParams.append('response_type', 'code');
-    authUrl.searchParams.append('scope', 'openid profile email');
+    authUrl.searchParams.append('scope', 'openid profile email roles');  // Добавлен scope roles
     authUrl.searchParams.append('state', state);
     authUrl.searchParams.append('code_challenge', codeChallenge);
     authUrl.searchParams.append('code_challenge_method', 'S256');
@@ -264,26 +264,38 @@ export default function App() {
     // Перенаправляем пользователя на страницу авторизации Authentik
     window.location.href = authUrl.toString();
   };
-
   /**
    * Выполняет выход из системы
+   * Очищает сессии в Keycloak и Authentik
    */
   const handleLogout = async () => {
+    console.log('[Logout] Starting logout process');
+    
     try {
-      // Вызываем endpoint logout в Authentik
-      await fetch(`${AUTHENTIK_URL}/application/o/revoke/`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-    } catch (error) {
-      console.error('Logout error:', error);
-    } finally {
+      // Очищаем локальное состояние
       setIsAuthenticated(false);
       setUserInfo(null);
       setAccessToken(null);
       localStorage.removeItem('access_token');
-      // Перенаправляем на страницу выхода Authentik
-      window.location.href = `${AUTHENTIK_URL}/if/flow/default-invalidation-flow/`;
+      console.log('[Logout] Local state cleared');
+      
+      // Делаем logout в Keycloak через прямой редирект
+      // Keycloak очистит свою сессию и редиректнет на Authentik
+      const authentikLogoutUrl = new URL(`${AUTHENTIK_URL}/application/o/${CLIENT_ID}/end-session/`);
+      authentikLogoutUrl.searchParams.append('post_logout_redirect_uri', window.location.origin);
+      
+      const keycloakLogoutUrl = new URL('http://localhost:8080/realms/reports-realm/protocol/openid-connect/logout');
+      keycloakLogoutUrl.searchParams.append('post_logout_redirect_uri', authentikLogoutUrl.toString());
+      
+      console.log('[Logout] Redirecting to Keycloak logout');
+      
+      // Перенаправляем на Keycloak logout
+      // Keycloak -> Authentik logout -> Frontend
+      window.location.href = keycloakLogoutUrl.toString();
+    } catch (error) {
+      console.error('[Logout] Error:', error);
+      // В случае ошибки все равно перенаправляем на главную
+      window.location.href = window.location.origin;
     }
   };
 

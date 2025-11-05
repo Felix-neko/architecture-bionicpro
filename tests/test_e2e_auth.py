@@ -572,6 +572,15 @@ class TestAuthenticatedFeatures:
         assert "user" in response_data, "Ответ не содержит поле 'user'"
         assert "reports" in response_data, "Ответ не содержит поле 'reports'"
         
+        # Проверяем наличие ролей
+        user_data = response_data["user"]
+        assert "roles" in user_data, "Ответ не содержит поле 'roles'"
+        assert isinstance(user_data["roles"], list), "Поле 'roles' должно быть списком"
+        
+        # Проверяем, что есть роль prothetic_users
+        assert "prothetic_users" in user_data["roles"], f"Роль 'prothetic_users' не найдена. Доступные роли: {user_data['roles']}"
+        print(f"✓ Найдена роль 'prothetic_users' среди ролей: {user_data['roles']}")
+        
         # Проверяем данные пользователя
         user_data = response_data["user"]
         assert "username" in user_data, "Данные пользователя не содержат 'username'"
@@ -705,3 +714,234 @@ class TestFullE2EScenario:
         print("\n" + "="*70)
         print("=== ПОЛНЫЙ E2E СЦЕНАРИЙ ЗАВЕРШЕН УСПЕШНО ===")
         print("="*70 + "\n")
+
+
+class TestMultipleUsersAndLogout:
+    """Тесты для проверки работы с несколькими пользователями и корректного выхода."""
+    
+    def test_prothetic2_has_roles(
+        self,
+        page: Page,
+        frontend_url: str
+    ):
+        """
+        Проверяет, что пользователь prothetic2 имеет роли в JWT токене.
+        Проблема: при входе под prothetic2 отображается пустой список ролей.
+        """
+        print(f"\n=== Тест: Проверка ролей для пользователя prothetic2 ===")
+        
+        # Учетные данные для prothetic2
+        username = "prothetic2"
+        password = "prothetic123"
+        
+        # Шаг 1: Авторизуемся под prothetic2
+        print("1. Авторизация под prothetic2")
+        page.goto(frontend_url)
+        page.wait_for_load_state("networkidle")
+        time.sleep(1)
+        
+        # Нажимаем кнопку входа
+        login_button = page.get_by_role("button", name="Войти через Authentik")
+        login_button.click()
+        
+        # Ждем редиректа на Authentik
+        page.wait_for_url("**/localhost:9000/**", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        time.sleep(2)
+        
+        # Нажимаем кнопку Keycloak
+        keycloak_button = page.locator('a:has-text("Keycloak"), button:has-text("Keycloak")').first
+        keycloak_button.click()
+        time.sleep(2)
+        
+        # Вводим учетные данные в Keycloak
+        current_url = page.url
+        if "keycloak" in current_url.lower() or "8080" in current_url:
+            page.wait_for_selector('input[name="username"], input[id="username"]', timeout=10000)
+            page.locator('input[name="username"], input[id="username"]').first.fill(username)
+            page.locator('input[name="password"], input[id="password"]').first.fill(password)
+            page.locator('input[type="submit"], button[type="submit"]').first.click()
+            print(f"✓ Введены учетные данные: {username}")
+        
+        # Ждем возврата на Authentik и нажимаем кнопку подтверждения
+        time.sleep(2)
+        try:
+            continue_button = page.get_by_role("button", name="Войти")
+            if continue_button.is_visible(timeout=3000):
+                continue_button.click()
+                time.sleep(2)
+        except:
+            pass
+        
+        # Ждем редиректа на фронтенд
+        page.wait_for_url(f"{frontend_url}/**", timeout=20000)
+        time.sleep(5)
+        
+        # Проверяем, что авторизованы
+        success_indicator = page.locator('text=/Вы авторизованы|✓ Вы авторизованы/i')
+        expect(success_indicator).to_be_visible(timeout=15000)
+        print("✓ Авторизация выполнена успешно")
+        
+        # Шаг 2: Вызываем API и проверяем роли
+        print("2. Проверяем роли в JWT токене")
+        reports_button = page.get_by_role("button", name="Вызвать GET /reports")
+        expect(reports_button).to_be_visible()
+        reports_button.click()
+        time.sleep(2)
+        
+        # Получаем ответ
+        json_response = page.locator('pre.bg-gray-100').nth(1)
+        expect(json_response).to_be_visible()
+        response_text = json_response.inner_text()
+        response_data = json.loads(response_text)
+        
+        # Проверяем роли
+        user_data = response_data["user"]
+        assert "roles" in user_data, "Ответ не содержит поле 'roles'"
+        assert isinstance(user_data["roles"], list), "Поле 'roles' должно быть списком"
+        assert len(user_data["roles"]) > 0, f"Список ролей пуст для пользователя {username}"
+        assert "prothetic_users" in user_data["roles"], f"Роль 'prothetic_users' не найдена. Доступные роли: {user_data['roles']}"
+        
+        print(f"✓ Пользователь {username} имеет роли: {user_data['roles']}")
+        print(f"=== Тест завершен успешно ===\n")
+    
+    def test_logout_and_relogin(
+        self,
+        page: Page,
+        frontend_url: str,
+        test_user_credentials: dict
+    ):
+        """
+        Проверяет, что после выхода можно снова войти.
+        
+        Сценарий:
+        1. Входим под prothetic1
+        2. Выходим через кнопку "Выйти"
+        3. Проверяем, что вернулись на страницу входа
+        4. Снова входим под prothetic1
+        5. Проверяем, что вход успешен
+        
+        Примечание: Keycloak использует SSO и может запоминать сессию.
+        Для полной очистки сессии требуется настройка backchannel logout.
+        """
+        print(f"\n=== Тест: Проверка очистки сессии Keycloak после logout ===")
+        
+        # Шаг 1: Авторизуемся под prothetic1
+        print("1. Авторизация под prothetic1")
+        page.goto(frontend_url)
+        page.wait_for_load_state("networkidle")
+        time.sleep(1)
+        
+        login_button = page.get_by_role("button", name="Войти через Authentik")
+        login_button.click()
+        
+        page.wait_for_url("**/localhost:9000/**", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        time.sleep(2)
+        
+        keycloak_button = page.locator('a:has-text("Keycloak"), button:has-text("Keycloak")').first
+        keycloak_button.click()
+        time.sleep(2)
+        
+        current_url = page.url
+        if "keycloak" in current_url.lower() or "8080" in current_url:
+            page.wait_for_selector('input[name="username"], input[id="username"]', timeout=10000)
+            page.locator('input[name="username"], input[id="username"]').first.fill(test_user_credentials["username"])
+            page.locator('input[name="password"], input[id="password"]').first.fill(test_user_credentials["password"])
+            page.locator('input[type="submit"], button[type="submit"]').first.click()
+            print(f"✓ Введены учетные данные: {test_user_credentials['username']}")
+        
+        time.sleep(2)
+        try:
+            continue_button = page.get_by_role("button", name="Войти")
+            if continue_button.is_visible(timeout=3000):
+                continue_button.click()
+                time.sleep(2)
+        except:
+            pass
+        
+        page.wait_for_url(f"{frontend_url}/**", timeout=20000)
+        time.sleep(5)
+        
+        success_indicator = page.locator('text=/Вы авторизованы|✓ Вы авторизованы/i')
+        expect(success_indicator).to_be_visible(timeout=15000)
+        print("✓ Первая авторизация выполнена успешно")
+        
+        # Шаг 2: Выходим
+        print("2. Выполняем выход")
+        logout_button = page.get_by_role("button", name="Выйти")
+        expect(logout_button).to_be_visible()
+        logout_button.click()
+        print("   Кнопка выхода нажата, ожидаем редиректов...")
+        time.sleep(5)  # Даем время на цепочку редиректов: Keycloak -> Authentik -> Frontend
+        
+        # Проверяем текущий URL
+        current_url = page.url
+        print(f"   Текущий URL после logout: {current_url}")
+        
+        # Ждем, пока вернемся на страницу входа
+        if "localhost:9000" in current_url or "localhost:8080" in current_url:
+            print("   Находимся на Authentik или Keycloak, ждем редиректа на фронтенд...")
+            try:
+                page.wait_for_url(f"{frontend_url}/**", timeout=15000)
+                print(f"   Редирект выполнен: {page.url}")
+            except:
+                print("   Автоматического редиректа нет, переходим вручную")
+                page.goto(frontend_url)
+                page.wait_for_load_state("networkidle")
+        else:
+            print("   Уже на фронтенде")
+            page.goto(frontend_url)
+            page.wait_for_load_state("networkidle")
+        
+        time.sleep(2)
+        login_button_after_logout = page.get_by_role("button", name="Войти через Authentik")
+        expect(login_button_after_logout).to_be_visible(timeout=10000)
+        print("✓ Выход выполнен успешно")
+        
+        # Шаг 3: Снова входим
+        print("3. Повторный вход")
+        login_button_after_logout.click()
+        
+        # Ждем редиректа на Authentik или автоматического входа
+        time.sleep(3)
+        current_url = page.url
+        print(f"   Текущий URL: {current_url}")
+        
+        # Если мы на Authentik, нажимаем Keycloak
+        if "localhost:9000" in current_url:
+            print("   На странице Authentik, нажимаем Keycloak")
+            keycloak_button = page.locator('a:has-text("Keycloak"), button:has-text("Keycloak")').first
+            keycloak_button.click()
+            time.sleep(3)
+            current_url = page.url
+            print(f"   Текущий URL после Keycloak: {current_url}")
+        
+        # Если мы на Keycloak, вводим учетные данные (если показывается форма)
+        if "keycloak" in current_url.lower() or "8080" in current_url:
+            username_field = page.locator('input[name="username"], input[id="username"]').first
+            if username_field.is_visible(timeout=3000):
+                print("   Keycloak показывает форму входа")
+                username_field.fill(test_user_credentials["username"])
+                page.locator('input[name="password"], input[id="password"]').first.fill(test_user_credentials["password"])
+                page.locator('input[type="submit"], button[type="submit"]').first.click()
+                print(f"   Введены учетные данные: {test_user_credentials['username']}")
+                time.sleep(2)
+            else:
+                print("   Keycloak не показал форму (SSO)")
+        
+        # Ждем возврата на фронтенд
+        try:
+            page.wait_for_url(f"{frontend_url}/**", timeout=20000)
+        except:
+            pass
+        
+        time.sleep(3)
+        
+        # Шаг 4: Проверяем, что снова авторизованы
+        print("4. Проверяем повторную авторизацию")
+        success_indicator = page.locator('text=/Вы авторизованы|✓ Вы авторизованы/i')
+        expect(success_indicator).to_be_visible(timeout=10000)
+        print("✓ Повторная авторизация выполнена успешно")
+        
+        print(f"=== Тест завершен успешно ===\n")

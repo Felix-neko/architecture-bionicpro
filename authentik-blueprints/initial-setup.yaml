@@ -107,7 +107,67 @@ entries:
       pkce: "S256"
 
   # ============================================================================
-  # 2. OAuth2 Provider для фронтенда
+  # 2. Custom Property Mappings для передачи ролей и дополнительных полей
+  # ============================================================================
+  # Property Mapping для передачи ролей пользователя в JWT токене
+  - model: authentik_providers_oauth2.scopemapping
+    id: custom-roles-mapping
+    identifiers:
+      name: "Custom Roles Mapping"
+    attrs:
+      scope_name: roles  # Scope name для запроса ролей
+      description: "Передает роли пользователя из Keycloak в JWT токен"
+      expression: |
+        from authentik.sources.oauth.models import UserOAuthSourceConnection
+        
+        # Получаем группы из Keycloak через OAuth connection
+        user_groups = []
+        try:
+            # Находим OAuth connection для пользователя от Keycloak source
+            conn = UserOAuthSourceConnection.objects.filter(
+                user=request.user,
+                source__slug="keycloak"
+            ).first()
+            
+            if conn and hasattr(conn, 'info'):
+                # Получаем группы из userinfo, которые вернул Keycloak
+                groups_data = conn.info.get('groups', [])
+                if groups_data:
+                    user_groups = groups_data
+        except Exception as e:
+            pass
+        
+        # Если группы не найдены, пробуем получить из ak_groups
+        if not user_groups:
+            user_groups = [group.name for group in request.user.ak_groups.all()]
+        
+        # Возвращаем роли в формате, совместимом с Keycloak
+        return {
+            "roles": user_groups,
+            "resource_access": {
+                "reports-api": {
+                    "roles": user_groups
+                }
+            }
+        }
+
+  # Property Mapping для передачи preferred_username
+  - model: authentik_providers_oauth2.scopemapping
+    id: custom-preferred-username-mapping
+    identifiers:
+      name: "Custom Preferred Username"
+    attrs:
+      scope_name: profile  # Добавляем к profile scope
+      description: "Передает preferred_username в JWT токен"
+      expression: |
+        return {
+            "preferred_username": request.user.username,
+            "given_name": request.user.name.split()[0] if request.user.name and ' ' in request.user.name else request.user.name,
+            "family_name": request.user.name.split()[-1] if request.user.name and ' ' in request.user.name else "",
+        }
+
+  # ============================================================================
+  # 3. OAuth2 Provider для фронтенда
   # ============================================================================
   # Настраивает Authentik как OAuth2/OIDC сервер для фронтенда
   # Фронтенд будет использовать этот provider для аутентификации пользователей
@@ -168,11 +228,13 @@ entries:
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       
       # Property Mappings - определяют, какие данные включать в токены
-      # Эти mappings добавляют стандартные OIDC claims (openid, email, profile)
+      # Эти mappings добавляют стандартные OIDC claims (openid, email, profile) и custom claims (roles)
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]  # sub, iss, aud и т.д.
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]   # email, email_verified
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]] # name, given_name, family_name и т.д.
+        - !KeyOf custom-roles-mapping  # Добавляем custom mapping для ролей
+        - !KeyOf custom-preferred-username-mapping  # Добавляем custom mapping для preferred_username
       
       # Время жизни access token (24 часа)
       # После истечения фронтенд должен обновить токен через refresh token
