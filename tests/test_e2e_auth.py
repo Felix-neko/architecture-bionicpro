@@ -53,6 +53,14 @@ class TestAuthenticationFlow:
         """
         print(f"\n=== Начало теста авторизации ===")
         
+        # Слушаем консольные логи браузера с самого начала
+        console_messages = []
+        def handle_console(msg):
+            text = f"[{msg.type}] {msg.text}"
+            console_messages.append(text)
+            print(f"   [CONSOLE] {text}")  # Выводим сразу
+        page.on("console", handle_console)
+        
         # Шаг 1: Открываем фронтенд
         print(f"1. Открываем фронтенд: {frontend_url}")
         page.goto(frontend_url)
@@ -61,17 +69,36 @@ class TestAuthenticationFlow:
         page.wait_for_load_state("networkidle")
         time.sleep(1)
         
-        # Проверяем, что мы на странице входа
         print("2. Проверяем наличие кнопки входа")
         login_button = page.get_by_role("button", name="Войти через Authentik")
         expect(login_button).to_be_visible(timeout=10000)
         print("✓ Кнопка входа найдена")
         
-        # Шаг 2: Нажимаем кнопку входа
+        # Шаг 3: Нажимаем кнопку входа
         print("3. Нажимаем кнопку входа")
-        login_button.click()
         
-        # Ждем редиректа на Authentik (может быть либо /application/o/authorize/, либо /if/flow/)
+        # Проверяем sessionStorage перед кликом
+        session_before = page.evaluate("""() => {
+            return {
+                oauth_state: sessionStorage.getItem('oauth_state'),
+                code_verifier: sessionStorage.getItem('code_verifier')
+            }
+        }""")
+        print(f"   SessionStorage ДО клика: oauth_state={'есть' if session_before['oauth_state'] else 'нет'}, code_verifier={'есть' if session_before['code_verifier'] else 'нет'}")
+        
+        login_button.click()
+        time.sleep(0.5)  # Даем время на сохранение в sessionStorage
+        
+        # Проверяем sessionStorage после клика
+        session_after = page.evaluate("""() => {
+            return {
+                oauth_state: sessionStorage.getItem('oauth_state'),
+                code_verifier: sessionStorage.getItem('code_verifier')
+            }
+        }""")
+        print(f"   SessionStorage ПОСЛЕ клика: oauth_state={'есть' if session_after['oauth_state'] else 'нет'}, code_verifier={'есть' if session_after['code_verifier'] else 'нет'}")
+        
+        # Шаг 4: Ждем редиректа на Authentik (может быть либо /application/o/authorize/, либо /if/flow/)
         print("4. Ожидаем редирект на Authentik")
         page.wait_for_url("**/localhost:9000/**", timeout=15000)
         print(f"✓ Редирект на Authentik выполнен: {page.url}")
@@ -176,11 +203,24 @@ class TestAuthenticationFlow:
                 except:
                     print("⚠ Кнопка подтверждения не найдена, продолжаем")
         
+        # Слушаем все навигации для отладки
+        navigations = []
+        def handle_navigation(frame):
+            if frame == page.main_frame:
+                navigations.append(frame.url)
+        page.on("framenavigated", handle_navigation)
+        
         # Шаг 5: Ждем редиректа обратно на фронтенд
         print("8. Ожидаем редирект обратно на фронтенд")
         try:
             page.wait_for_url(f"{frontend_url}/**", timeout=20000)
             print(f"✓ Редирект на фронтенд выполнен: {page.url}")
+            
+            # Сразу проверяем параметры URL
+            from urllib.parse import urlparse, parse_qs
+            parsed_url = urlparse(page.url)
+            query_params = parse_qs(parsed_url.query)
+            print(f"   Параметры сразу после редиректа: code={'есть' if 'code' in query_params else 'нет'}, state={'есть' if 'state' in query_params else 'нет'}")
         except Exception as e:
             # Выводим информацию об ошибке
             print(f"⚠ Ошибка редиректа: {e}")
@@ -201,14 +241,54 @@ class TestAuthenticationFlow:
         
         # Ждем завершения OAuth flow
         # Не используем networkidle, так как фронтенд может делать периодические запросы
+        print("9. Ждем завершения OAuth flow")
         time.sleep(5)
         
+        # Проверяем sessionStorage
+        session_storage = page.evaluate("""() => {
+            return {
+                oauth_state: sessionStorage.getItem('oauth_state'),
+                code_verifier: sessionStorage.getItem('code_verifier')
+            }
+        }""")
+        print(f"   SessionStorage: oauth_state={'есть' if session_storage['oauth_state'] else 'нет'}, code_verifier={'есть' if session_storage['code_verifier'] else 'нет'}")
+        
         # Шаг 6: Проверяем, что авторизация прошла успешно
-        print("9. Проверяем успешную авторизацию")
+        print("10. Проверяем успешную авторизацию")
         print(f"   Текущий URL: {page.url}")
         
+        # Проверяем параметры URL
+        from urllib.parse import urlparse, parse_qs
+        parsed_url = urlparse(page.url)
+        query_params = parse_qs(parsed_url.query)
+        print(f"   URL path: {parsed_url.path}")
+        print(f"   URL параметры: code={'есть' if 'code' in query_params else 'нет'}, state={'есть' if 'state' in query_params else 'нет'}")
+        
+        # Выводим содержимое страницы для отладки
+        page_content = page.content()
+        print(f"   Длина HTML: {len(page_content)} символов")
+        
+        # Проверяем, есть ли кнопка "Войти через Authentik" (значит не авторизованы)
+        login_button_visible = page.get_by_role("button", name="Войти через Authentik").is_visible()
+        print(f"   Кнопка 'Войти через Authentik' видна: {login_button_visible}")
+        
+        # Выводим консольные логи браузера
+        if console_messages:
+            print("   Консольные логи браузера:")
+            for msg in console_messages[-10:]:  # Последние 10 сообщений
+                print(f"     {msg}")
+        else:
+            print("   Консольных логов нет")
+        
+        # Выводим все навигации
+        if navigations:
+            print("   Навигации:")
+            for nav in navigations[-5:]:  # Последние 5 навигаций
+                print(f"     {nav}")
+        
         # Ищем элемент, который показывает, что пользователь авторизован
-        success_indicator = page.get_by_text("Вы авторизованы")
+        # Используем более гибкий селектор
+        success_indicator = page.locator('text=/Вы авторизованы|✓ Вы авторизованы/i')
         expect(success_indicator).to_be_visible(timeout=15000)
         print("✓ Найден индикатор успешной авторизации")
         
@@ -223,6 +303,116 @@ class TestAuthenticationFlow:
         print("✓ Отображается информация о пользователе")
         
         print(f"=== Тест авторизации завершен успешно ===\n")
+    
+    def test_logout_flow(
+        self, 
+        page: Page, 
+        frontend_url: str, 
+        test_user_credentials: dict
+    ):
+        """
+        Тестирует процесс выхода из системы:
+        1. Авторизуется в системе
+        2. Нажимает кнопку выхода
+        3. Проверяет, что произошел редирект на страницу входа
+        4. Проверяет, что отображается кнопка "Войти через Authentik"
+        """
+        print(f"\n=== Начало теста выхода из системы ===")
+        
+        # Шаг 1: Авторизуемся (используем упрощенную версию из test_login_flow_with_authentik)
+        print("1. Выполняем авторизацию")
+        page.goto(frontend_url)
+        page.wait_for_load_state("networkidle")
+        time.sleep(1)
+        
+        # Нажимаем кнопку входа
+        login_button = page.get_by_role("button", name="Войти через Authentik")
+        login_button.click()
+        
+        # Ждем редиректа на Authentik
+        page.wait_for_url("**/localhost:9000/**", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        time.sleep(2)
+        
+        # Нажимаем кнопку Keycloak
+        keycloak_button = page.locator('a:has-text("Keycloak"), button:has-text("Keycloak")').first
+        keycloak_button.click()
+        time.sleep(2)
+        
+        # Вводим учетные данные в Keycloak
+        current_url = page.url
+        if "keycloak" in current_url.lower() or "8080" in current_url:
+            page.wait_for_selector('input[name="username"], input[id="username"]', timeout=10000)
+            page.locator('input[name="username"], input[id="username"]').first.fill(test_user_credentials["username"])
+            page.locator('input[name="password"], input[id="password"]').first.fill(test_user_credentials["password"])
+            page.locator('input[type="submit"], button[type="submit"]').first.click()
+        
+        # Ждем возврата на Authentik и нажимаем кнопку подтверждения
+        time.sleep(2)
+        try:
+            continue_button = page.get_by_role("button", name="Войти")
+            if continue_button.is_visible(timeout=3000):
+                continue_button.click()
+                time.sleep(2)
+        except:
+            pass
+        
+        # Ждем редиректа на фронтенд
+        page.wait_for_url(f"{frontend_url}/**", timeout=20000)
+        time.sleep(5)
+        
+        # Проверяем, что авторизованы
+        success_indicator = page.locator('text=/Вы авторизованы|✓ Вы авторизованы/i')
+        expect(success_indicator).to_be_visible(timeout=15000)
+        print("✓ Авторизация выполнена успешно")
+        
+        # Шаг 2: Нажимаем кнопку выхода
+        print("2. Нажимаем кнопку выхода")
+        logout_button = page.get_by_role("button", name="Выйти")
+        expect(logout_button).to_be_visible()
+        logout_button.click()
+        print("✓ Кнопка выхода нажата")
+        
+        # Шаг 3: Ждем редиректа
+        print("3. Ожидаем редирект после выхода")
+        # Может быть редирект через Authentik logout flow
+        time.sleep(3)
+        
+        # Проверяем, что мы на странице входа (может быть на фронтенде или на Authentik)
+        current_url = page.url
+        print(f"   Текущий URL после выхода: {current_url}")
+        
+        # Если мы на Authentik, ждем редиректа обратно на фронтенд
+        if "localhost:9000" in current_url:
+            print("   Находимся на странице Authentik, ждем редиректа на фронтенд")
+            try:
+                page.wait_for_url(f"{frontend_url}/**", timeout=10000)
+                print(f"✓ Редирект на фронтенд выполнен: {page.url}")
+            except:
+                # Если автоматического редиректа нет, переходим вручную
+                print("   Автоматического редиректа нет, переходим на фронтенд вручную")
+                page.goto(frontend_url)
+                page.wait_for_load_state("networkidle")
+        else:
+            # Если мы остались на фронтенде, просто переходим на главную страницу
+            print("   Остались на фронтенде, переходим на главную страницу")
+            page.goto(frontend_url)
+            page.wait_for_load_state("networkidle")
+        
+        time.sleep(2)
+        
+        # Шаг 4: Проверяем, что видна кнопка входа (значит мы вышли)
+        print("4. Проверяем, что отображается кнопка входа")
+        login_button_after_logout = page.get_by_role("button", name="Войти через Authentik")
+        expect(login_button_after_logout).to_be_visible(timeout=10000)
+        print("✓ Кнопка 'Войти через Authentik' отображается")
+        
+        # Проверяем, что НЕ отображается индикатор авторизации
+        success_indicator_check = page.locator('text=/Вы авторизованы|✓ Вы авторизованы/i')
+        expect(success_indicator_check).not_to_be_visible()
+        print("✓ Индикатор авторизации не отображается")
+        
+        print(f"=== Тест выхода завершен успешно ===\n")
 
 
 class TestAuthenticatedFeatures:
@@ -346,11 +536,31 @@ class TestAuthenticatedFeatures:
         
         # Проверяем, что статус код 200
         status_code = authenticated_page.locator('span.font-mono').first
+        actual_status = status_code.text_content()
+        print(f"   Статус код от бэкенда: {actual_status}")
+        
+        # Если не 200, выводим ошибку
+        if actual_status != "200":
+            error_section = authenticated_page.locator('pre.bg-red-50')
+            if error_section.is_visible():
+                error_text = error_section.text_content()
+                print(f"   Ошибка от бэкенда: {error_text}")
+        
         expect(status_code).to_have_text("200")
         print("✓ Статус код: 200")
         
         # Проверяем наличие JSON ответа
-        json_response = authenticated_page.locator('pre').first
+        # Ищем все pre элементы
+        all_pres = authenticated_page.locator('pre').all()
+        print(f"   Найдено {len(all_pres)} элементов <pre>")
+        for i, pre in enumerate(all_pres):
+            is_visible = pre.is_visible()
+            classes = pre.get_attribute('class')
+            print(f"   <pre> #{i}: visible={is_visible}, class='{classes}'")
+        
+        # Ищем pre с классом bg-gray-100 (ответ от сервера)
+        # Берем второй элемент (индекс 1), так как первый находится в скрытом <details> для userinfo
+        json_response = authenticated_page.locator('pre.bg-gray-100').nth(1)
         expect(json_response).to_be_visible()
         
         # Получаем текст ответа и парсим JSON
@@ -482,7 +692,8 @@ class TestFullE2EScenario:
         status_code = page.locator('span.font-mono').first
         expect(status_code).to_have_text("200")
         
-        json_response = page.locator('pre').first
+        # Берем второй pre элемент (индекс 1), так как первый находится в скрытом <details> для userinfo
+        json_response = page.locator('pre.bg-gray-100').nth(1)
         expect(json_response).to_be_visible()
         response_text = json_response.inner_text()
         response_data = json.loads(response_text)

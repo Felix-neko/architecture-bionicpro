@@ -85,6 +85,8 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   // Состояние: информация о пользователе
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
+  // Состояние: access token
+  const [accessToken, setAccessToken] = useState<string | null>(null);
   // Состояние: ответ от бэкенда /reports
   const [backendResponse, setBackendResponse] = useState<BackendResponse | null>(null);
   // Состояние: загружается ли запрос к бэкенду
@@ -92,6 +94,7 @@ export default function App() {
 
   /**
    * Проверяем при загрузке, есть ли OAuth callback в URL
+   * [UPDATE_MARKER_v2]
    */
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -111,21 +114,40 @@ export default function App() {
    * Проверяет, аутентифицирован ли пользователь
    */
   const checkAuthentication = async () => {
+    console.log('[Auth] Checking authentication...');
     try {
+      // Проверяем, есть ли access token
+      const token = accessToken || localStorage.getItem('access_token');
+      
+      if (!token) {
+        console.log('[Auth] No access token found');
+        setIsAuthenticated(false);
+        setLoading(false);
+        return;
+      }
+
       // Пытаемся получить информацию о пользователе из Authentik
       const response = await fetch(`${AUTHENTIK_URL}/application/o/userinfo/`, {
-        credentials: 'include', // Включаем cookies
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
       });
+
+      console.log('[Auth] Userinfo response status:', response.status);
 
       if (response.ok) {
         const data = await response.json();
+        console.log('[Auth] User authenticated:', { username: data.preferred_username || data.name });
         setUserInfo(data);
         setIsAuthenticated(true);
+        setAccessToken(token);
       } else {
+        console.log('[Auth] User not authenticated');
         setIsAuthenticated(false);
+        localStorage.removeItem('access_token');
       }
     } catch (error) {
-      console.error('Error checking authentication:', error);
+      console.error('[Auth] Error checking authentication:', error);
       setIsAuthenticated(false);
     } finally {
       setLoading(false);
@@ -136,20 +158,28 @@ export default function App() {
    * Обрабатывает OAuth callback после редиректа из Authentik
    */
   const handleOAuthCallback = async (code: string, state: string) => {
+    console.log('[OAuth] Starting callback handling', { code: code.substring(0, 20) + '...', state: state.substring(0, 20) + '...' });
+    
     try {
       // Проверяем state для защиты от CSRF
       const savedState = sessionStorage.getItem('oauth_state');
+      console.log('[OAuth] Checking state', { received: state.substring(0, 20) + '...', saved: savedState?.substring(0, 20) + '...' });
+      
       if (state !== savedState) {
+        console.error('[OAuth] State mismatch!', { received: state, saved: savedState });
         throw new Error('Invalid state parameter');
       }
 
       // Получаем code_verifier для PKCE
       const codeVerifier = sessionStorage.getItem('code_verifier');
       if (!codeVerifier) {
+        console.error('[OAuth] Missing code_verifier in sessionStorage');
         throw new Error('Missing code verifier');
       }
+      console.log('[OAuth] Code verifier found');
 
       // Обмениваем authorization code на токены
+      console.log('[OAuth] Exchanging code for tokens...');
       const tokenResponse = await fetch(`${AUTHENTIK_URL}/application/o/token/`, {
         method: 'POST',
         headers: {
@@ -165,8 +195,22 @@ export default function App() {
         credentials: 'include',
       });
 
+      console.log('[OAuth] Token response status:', tokenResponse.status);
+      
       if (!tokenResponse.ok) {
-        throw new Error('Failed to exchange code for tokens');
+        const errorText = await tokenResponse.text();
+        console.error('[OAuth] Token exchange failed:', errorText);
+        throw new Error(`Failed to exchange code for tokens: ${tokenResponse.status} ${errorText}`);
+      }
+
+      const tokenData = await tokenResponse.json();
+      console.log('[OAuth] Token exchange successful', { hasAccessToken: !!tokenData.access_token });
+
+      // Сохраняем access token
+      if (tokenData.access_token) {
+        localStorage.setItem('access_token', tokenData.access_token);
+        setAccessToken(tokenData.access_token);
+        console.log('[OAuth] Access token saved');
       }
 
       // Очищаем временные данные
@@ -177,9 +221,11 @@ export default function App() {
       window.history.replaceState({}, document.title, window.location.pathname);
 
       // Проверяем аутентификацию
+      console.log('[OAuth] Checking authentication...');
       await checkAuthentication();
+      console.log('[OAuth] Callback handling complete');
     } catch (error) {
-      console.error('OAuth callback error:', error);
+      console.error('[OAuth] Callback error:', error);
       setLoading(false);
     }
   };
@@ -188,14 +234,20 @@ export default function App() {
    * Инициирует OAuth flow для входа
    */
   const handleLogin = async () => {
+    console.log('[Login] Starting OAuth flow');
+    
     // Генерируем state для защиты от CSRF
     const state = generateRandomString(32);
     sessionStorage.setItem('oauth_state', state);
+    console.log('[Login] Saved oauth_state to sessionStorage');
 
     // Генерируем code_verifier и code_challenge для PKCE
     const codeVerifier = generateRandomString(128);
     sessionStorage.setItem('code_verifier', codeVerifier);
+    console.log('[Login] Saved code_verifier to sessionStorage');
+    
     const codeChallenge = await sha256(codeVerifier);
+    console.log('[Login] Generated code_challenge');
 
     // Формируем URL для авторизации
     const authUrl = new URL(`${AUTHENTIK_URL}/application/o/authorize/`);
@@ -207,6 +259,8 @@ export default function App() {
     authUrl.searchParams.append('code_challenge', codeChallenge);
     authUrl.searchParams.append('code_challenge_method', 'S256');
 
+    console.log('[Login] Redirecting to:', authUrl.toString());
+    
     // Перенаправляем пользователя на страницу авторизации Authentik
     window.location.href = authUrl.toString();
   };
@@ -226,6 +280,8 @@ export default function App() {
     } finally {
       setIsAuthenticated(false);
       setUserInfo(null);
+      setAccessToken(null);
+      localStorage.removeItem('access_token');
       // Перенаправляем на страницу выхода Authentik
       window.location.href = `${AUTHENTIK_URL}/if/flow/default-invalidation-flow/`;
     }
@@ -233,18 +289,22 @@ export default function App() {
 
   /**
    * Функция для вызова бэкенда /reports
+   * [UPDATE_MARKER_v3]
    */
   const fetchReports = async () => {
     setLoadingBackend(true);
     setBackendResponse(null);
 
     try {
-      // Выполняем GET запрос к бэкенду через Authentik proxy
-      const response = await fetch(`${BACKEND_URL}/reports`, {
+      const token = accessToken || localStorage.getItem('access_token');
+      
+      // Выполняем GET запрос к бэкенду с JWT токеном
+      // Используем /reports-jwt endpoint, который принимает Bearer токены
+      const response = await fetch(`${BACKEND_URL}/reports-jwt`, {
         method: 'GET',
-        credentials: 'include', // Включаем cookies для передачи сессии
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
         },
       });
 

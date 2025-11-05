@@ -48,14 +48,15 @@ app.add_middleware(
 )
 
 
-# Определяем класс конфигурации для параметров Keycloak
+# Определяем класс конфигурации для параметров Authentik/Keycloak
 class KeycloakConfig:
-    # Указываем адрес издателя токенов (realm) в Keycloak
-    issuer: str = "http://localhost:8080/realms/reports-realm"
-    # Формируем URL для получения открытых ключей (JWKS) Keycloak
-    jwks_url: str = f"{issuer}/protocol/openid-connect/certs"
+    # Указываем адрес издателя токенов - теперь это Authentik
+    issuer: str = "http://localhost:9000/application/o/bionicpro-frontend/"
+    # Формируем URL для получения открытых ключей (JWKS) Authentik
+    jwks_url: str = "http://localhost:9000/application/o/bionicpro-frontend/jwks/"
     # Указываем ожидаемую аудиторию (client_id) токена для backend-а
-    audience: str | None = "reports-api"
+    # Для Authentik это client_id фронтенда
+    audience: str | None = "bionicpro-frontend"
     # Указываем допустимые алгоритмы подписи токена
     algorithms: tuple[str, ...] = ("RS256",)
 
@@ -159,7 +160,7 @@ async def verify_jwt(
             token,
             public_key,
             algorithms=list(KeycloakConfig.algorithms),
-            audience="reports-api",  # Check for reports-api audience
+            audience=KeycloakConfig.audience,  # Use configured audience
             issuer=KeycloakConfig.issuer,
         )
         logging.info("Token decoded successfully")
@@ -206,8 +207,26 @@ async def get_reports(user_info: Dict[str, Any] = Depends(get_user_from_headers)
 async def get_reports_jwt(payload: Dict[str, Any] = Depends(verify_jwt)) -> Dict[str, Any]:
     # Логируем полезную нагрузку токена в формате JSON
     logging.info("JWT payload: %s", json.dumps(payload))
-    # Возвращаем полезную нагрузку в ответе API
-    return {"payload": payload}
+    
+    # Формируем информацию о пользователе из JWT payload
+    user_info = {
+        "username": payload.get("preferred_username") or payload.get("sub"),
+        "email": payload.get("email"),
+        "groups": payload.get("groups", []),
+        "uid": payload.get("sub"),
+        "authenticated_via": "JWT Token (Authentik)",
+    }
+    
+    # Возвращаем ту же структуру, что и /reports
+    return {
+        "message": "Successfully authenticated via JWT",
+        "user": user_info,
+        "reports": [
+            {"id": 1, "name": "Report 1", "status": "completed"},
+            {"id": 2, "name": "Report 2", "status": "in_progress"},
+            {"id": 3, "name": "Report 3", "status": "pending"},
+        ],
+    }
 
 
 # Запускаем приложение, если файл выполняется напрямую
