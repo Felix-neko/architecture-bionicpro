@@ -58,6 +58,75 @@ services:
       - "8081:80"
     depends_on:
       - openldap-zambia
+  authentik_db:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: authentik_password
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  authentik_redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  authentik_server:
+    image: ghcr.io/goauthentik/server:2024.10.1
+    command: server
+    environment:
+      AUTHENTIK_SECRET_KEY: "change-me-to-a-random-string-at-least-50-chars-long-please"
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_REDIS__HOST: authentik_redis
+      AUTHENTIK_POSTGRESQL__HOST: authentik_db
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik_password
+      AUTHENTIK_BOOTSTRAP_PASSWORD: Admin123!@#
+      AUTHENTIK_BOOTSTRAP_TOKEN: bootstrap-token-change-me
+    ports:
+      - "9000:9000"
+      - "9444:9443"
+    depends_on:
+      authentik_db:
+        condition: service_healthy
+      authentik_redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    volumes:
+      - authentik_media:/media
+      - authentik_templates:/templates
+      - ./authentik-blueprints:/blueprints/custom:ro
+  authentik_worker:
+    image: ghcr.io/goauthentik/server:2024.10.1
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: "change-me-to-a-random-string-at-least-50-chars-long-please"
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_REDIS__HOST: authentik_redis
+      AUTHENTIK_POSTGRESQL__HOST: authentik_db
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik_password
+    depends_on:
+      authentik_db:
+        condition: service_healthy
+      authentik_redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    volumes:
+      - authentik_media:/media
+      - authentik_templates:/templates
+      - ./authentik-blueprints:/blueprints/custom:ro
   frontend:
     build:
       context: ./frontend
@@ -69,3 +138,9 @@ services:
       REACT_APP_KEYCLOAK_URL: http://localhost:8080
       REACT_APP_KEYCLOAK_REALM: reports-realm
       REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+
+volumes:
+  authentik_media:
+    driver: local
+  authentik_templates:
+    driver: local

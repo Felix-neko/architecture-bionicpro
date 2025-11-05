@@ -1,16 +1,16 @@
-"""Основной модуль API для отчетов с проверкой JWT-токенов Keycloak."""
+"""Основной модуль API для отчетов с проверкой JWT-токенов от Authentik."""
 
 # Импортируем модуль json для сериализации словарей в строки
 import json
 # Импортируем модуль logging для вывода диагностических сообщений
 import logging
 # Импортируем типы Any и Dict для аннотаций типов функций
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-# Импортируем httpx для выполнения HTTP-запросов к Keycloak
+# Импортируем httpx для выполнения HTTP-запросов к Authentik/Keycloak
 import httpx
 # Импортируем Depends, FastAPI, Header и HTTPException для построения API
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 # Импортируем CORSMiddleware для настройки CORS-политики
 from fastapi.middleware.cors import CORSMiddleware
 # Импортируем библиотеку PyJWT для работы с JWT-токенами
@@ -34,6 +34,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:5173",
+        "http://localhost:9000",  # Authentik
         "*"
     ],
     # Разрешаем передачу cookies и авторизационных заголовков
@@ -42,6 +43,8 @@ app.add_middleware(
     allow_methods=["*"],
     # Разрешаем любые заголовки в запросах
     allow_headers=["*"],
+    # Разрешаем фронтенду видеть заголовки, которые инжектирует Authentik
+    expose_headers=["X-Authentik-Username", "X-Authentik-Groups", "X-Authentik-Email", "X-Authentik-Uid"],
 )
 
 
@@ -69,7 +72,47 @@ async def get_jwks() -> Dict[str, Any]:
         return response.json()
 
 
+# Определяем зависимость FastAPI для извлечения данных пользователя из заголовков Authentik
+async def get_user_from_headers(
+    request: Request,
+    x_authentik_username: Optional[str] = Header(default=None, alias="X-Authentik-Username"),
+    x_authentik_email: Optional[str] = Header(default=None, alias="X-Authentik-Email"),
+    x_authentik_groups: Optional[str] = Header(default=None, alias="X-Authentik-Groups"),
+    x_authentik_uid: Optional[str] = Header(default=None, alias="X-Authentik-Uid"),
+) -> Dict[str, Any]:
+    """
+    Извлекает информацию о пользователе из заголовков, которые инжектирует Authentik.
+    Authentik работает как прокси и добавляет эти заголовки после успешной аутентификации.
+    """
+    # Проверяем наличие обязательных заголовков от Authentik
+    if not x_authentik_username:
+        logging.warning("Missing X-Authentik-Username header")
+        raise HTTPException(
+            status_code=401, 
+            detail="Missing authentication headers from Authentik"
+        )
+    
+    # Парсим группы (роли) из заголовка
+    groups = []
+    if x_authentik_groups:
+        # Authentik передает группы через запятую или другой разделитель
+        groups = [g.strip() for g in x_authentik_groups.split(",") if g.strip()]
+    
+    # Формируем словарь с данными пользователя
+    user_info = {
+        "username": x_authentik_username,
+        "email": x_authentik_email,
+        "groups": groups,
+        "uid": x_authentik_uid,
+        "authenticated_via": "authentik"
+    }
+    
+    logging.info("User authenticated via Authentik: %s", json.dumps(user_info))
+    return user_info
+
+
 # Определяем зависимость FastAPI для проверки JWT-токена в заголовке Authorization
+# Эта функция оставлена для обратной совместимости, если нужно проверять JWT напрямую
 async def verify_jwt(
     authorization: str = Header(default=None),
     jwks: Dict[str, Any] = Depends(get_jwks),
@@ -142,9 +185,25 @@ async def verify_jwt(
     return payload
 
 
-# Описываем маршрут GET /reports, который требует валидный JWT
+# Описываем маршрут GET /reports, который требует аутентификацию через Authentik
 @app.get("/reports")
-async def get_reports(payload: Dict[str, Any] = Depends(verify_jwt)) -> Dict[str, Any]:
+async def get_reports(user_info: Dict[str, Any] = Depends(get_user_from_headers)) -> Dict[str, Any]:
+    # Логируем информацию о пользователе из заголовков Authentik
+    logging.info("User info from Authentik: %s", json.dumps(user_info))
+    # Возвращаем информацию о пользователе в ответе API
+    return {
+        "message": "Reports endpoint accessed successfully",
+        "user": user_info,
+        "reports": [
+            {"id": 1, "name": "Monthly Report", "status": "completed"},
+            {"id": 2, "name": "Quarterly Report", "status": "in_progress"},
+        ]
+    }
+
+
+# Альтернативный маршрут для проверки JWT напрямую (для отладки)
+@app.get("/reports-jwt")
+async def get_reports_jwt(payload: Dict[str, Any] = Depends(verify_jwt)) -> Dict[str, Any]:
     # Логируем полезную нагрузку токена в формате JSON
     logging.info("JWT payload: %s", json.dumps(payload))
     # Возвращаем полезную нагрузку в ответе API

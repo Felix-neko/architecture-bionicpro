@@ -1,11 +1,27 @@
-// Импортируем React и хук useState для управления состоянием компонента
-import React, { useState } from 'react'
-// Импортируем хук для работы с Keycloak аутентификацией
-import { useKeycloak } from '@react-keycloak/web'
+// Импортируем React и хуки для управления состоянием компонента
+import React, { useState, useEffect } from 'react'
+
+// Конфигурация Authentik OAuth
+const AUTHENTIK_URL = 'http://localhost:9000'
+const CLIENT_ID = 'bionicpro-frontend'
+const REDIRECT_URI = 'http://localhost:5173/callback'
+const BACKEND_URL = 'http://localhost:3001'
 
 // Интерфейс для ответа от бэкенда /reports
 interface ReportsResponse {
-  payload: any;
+  message: string;
+  user: {
+    username: string;
+    email: string | null;
+    groups: string[];
+    uid: string;
+    authenticated_via: string;
+  };
+  reports: Array<{
+    id: number;
+    name: string;
+    status: string;
+  }>;
 }
 
 // Интерфейс для состояния ответа бэкенда
@@ -15,103 +31,235 @@ interface BackendResponse {
   error: string | null;
 }
 
-// Интерфейс для декодированного JWT токена
-interface DecodedToken {
-  exp: number;               // Время истечения токена (Unix timestamp)
-  iat: number;               // Время выдачи токена (Unix timestamp)
-  sub: string;               // Subject (идентификатор пользователя)
-  preferred_username?: string; // Имя пользователя
-  email?: string;            // Email пользователя
-  name?: string;             // Полное имя пользователя
-  realm_access?: {           // Роли уровня realm
-    roles: string[];
-  };
-  [key: string]: any;        // Дополнительные поля
+// Интерфейс для информации о пользователе из Authentik
+interface UserInfo {
+  sub: string;
+  email?: string;
+  name?: string;
+  preferred_username?: string;
+  groups?: string[];
+  [key: string]: any;
 }
 
 /**
- * Декодирует JWT токен без проверки подписи
- * ВНИМАНИЕ: Это только для отображения данных, не для проверки безопасности!
- * @param token - JWT токен
- * @returns декодированный payload токена
+ * Генерирует случайную строку для PKCE
  */
-function decodeJWT(token: string): DecodedToken {
-  // JWT состоит из трех частей, разделенных точками: header.payload.signature
-  const parts = token.split('.');
-  
-  if (parts.length !== 3) {
-    throw new Error('Invalid JWT token format');
+function generateRandomString(length: number): string {
+  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  let text = '';
+  for (let i = 0; i < length; i++) {
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
   }
-  
-  // Декодируем payload (вторая часть токена)
-  const payload = parts[1];
-  
-  // Заменяем base64url символы на стандартные base64
-  const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
-  
-  // Декодируем base64 и парсим JSON
-  const jsonPayload = decodeURIComponent(
-    atob(base64)
-      .split('')
-      .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-      .join('')
-  );
-  
-  return JSON.parse(jsonPayload);
+  return text;
+}
+
+/**
+ * Создает SHA256 хеш и кодирует в base64url для PKCE
+ */
+async function sha256(plain: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return base64urlencode(hash);
+}
+
+/**
+ * Кодирует ArrayBuffer в base64url
+ */
+function base64urlencode(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let str = '';
+  bytes.forEach((byte) => {
+    str += String.fromCharCode(byte);
+  });
+  return btoa(str)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
 }
 
 export default function App() {
-  // Получаем объект keycloak и флаг инициализации из хука useKeycloak
-  const { keycloak, initialized } = useKeycloak();
-  
+  // Состояние: аутентифицирован ли пользователь
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  // Состояние: загрузка проверки аутентификации
+  const [loading, setLoading] = useState<boolean>(true);
+  // Состояние: информация о пользователе
+  const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   // Состояние: ответ от бэкенда /reports
   const [backendResponse, setBackendResponse] = useState<BackendResponse | null>(null);
-  
   // Состояние: загружается ли запрос к бэкенду
   const [loadingBackend, setLoadingBackend] = useState(false);
 
-  // Функция для вызова бэкенда /reports
-  const fetchReports = async () => {
-    // Проверяем наличие токена аутентификации
-    if (!keycloak.token) {
-      alert('Токен не найден');
-      return;
-    }
+  /**
+   * Проверяем при загрузке, есть ли OAuth callback в URL
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    const state = params.get('state');
 
-    // Устанавливаем состояние загрузки
+    if (code && state) {
+      // Обрабатываем OAuth callback
+      handleOAuthCallback(code, state);
+    } else {
+      // Проверяем, есть ли сохраненная сессия
+      checkAuthentication();
+    }
+  }, []);
+
+  /**
+   * Проверяет, аутентифицирован ли пользователь
+   */
+  const checkAuthentication = async () => {
+    try {
+      // Пытаемся получить информацию о пользователе из Authentik
+      const response = await fetch(`${AUTHENTIK_URL}/application/o/userinfo/`, {
+        credentials: 'include', // Включаем cookies
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setUserInfo(data);
+        setIsAuthenticated(true);
+      } else {
+        setIsAuthenticated(false);
+      }
+    } catch (error) {
+      console.error('Error checking authentication:', error);
+      setIsAuthenticated(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * Обрабатывает OAuth callback после редиректа из Authentik
+   */
+  const handleOAuthCallback = async (code: string, state: string) => {
+    try {
+      // Проверяем state для защиты от CSRF
+      const savedState = sessionStorage.getItem('oauth_state');
+      if (state !== savedState) {
+        throw new Error('Invalid state parameter');
+      }
+
+      // Получаем code_verifier для PKCE
+      const codeVerifier = sessionStorage.getItem('code_verifier');
+      if (!codeVerifier) {
+        throw new Error('Missing code verifier');
+      }
+
+      // Обмениваем authorization code на токены
+      const tokenResponse = await fetch(`${AUTHENTIK_URL}/application/o/token/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code,
+          redirect_uri: REDIRECT_URI,
+          client_id: CLIENT_ID,
+          code_verifier: codeVerifier,
+        }),
+        credentials: 'include',
+      });
+
+      if (!tokenResponse.ok) {
+        throw new Error('Failed to exchange code for tokens');
+      }
+
+      // Очищаем временные данные
+      sessionStorage.removeItem('oauth_state');
+      sessionStorage.removeItem('code_verifier');
+
+      // Очищаем URL от параметров
+      window.history.replaceState({}, document.title, window.location.pathname);
+
+      // Проверяем аутентификацию
+      await checkAuthentication();
+    } catch (error) {
+      console.error('OAuth callback error:', error);
+      setLoading(false);
+    }
+  };
+
+  /**
+   * Инициирует OAuth flow для входа
+   */
+  const handleLogin = async () => {
+    // Генерируем state для защиты от CSRF
+    const state = generateRandomString(32);
+    sessionStorage.setItem('oauth_state', state);
+
+    // Генерируем code_verifier и code_challenge для PKCE
+    const codeVerifier = generateRandomString(128);
+    sessionStorage.setItem('code_verifier', codeVerifier);
+    const codeChallenge = await sha256(codeVerifier);
+
+    // Формируем URL для авторизации
+    const authUrl = new URL(`${AUTHENTIK_URL}/application/o/authorize/`);
+    authUrl.searchParams.append('client_id', CLIENT_ID);
+    authUrl.searchParams.append('redirect_uri', REDIRECT_URI);
+    authUrl.searchParams.append('response_type', 'code');
+    authUrl.searchParams.append('scope', 'openid profile email');
+    authUrl.searchParams.append('state', state);
+    authUrl.searchParams.append('code_challenge', codeChallenge);
+    authUrl.searchParams.append('code_challenge_method', 'S256');
+
+    // Перенаправляем пользователя на страницу авторизации Authentik
+    window.location.href = authUrl.toString();
+  };
+
+  /**
+   * Выполняет выход из системы
+   */
+  const handleLogout = async () => {
+    try {
+      // Вызываем endpoint logout в Authentik
+      await fetch(`${AUTHENTIK_URL}/application/o/revoke/`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      setIsAuthenticated(false);
+      setUserInfo(null);
+      // Перенаправляем на страницу выхода Authentik
+      window.location.href = `${AUTHENTIK_URL}/if/flow/default-invalidation-flow/`;
+    }
+  };
+
+  /**
+   * Функция для вызова бэкенда /reports
+   */
+  const fetchReports = async () => {
     setLoadingBackend(true);
     setBackendResponse(null);
 
     try {
-      // Выполняем GET запрос к бэкенду
-      const response = await fetch('http://localhost:3001/reports', {
+      // Выполняем GET запрос к бэкенду через Authentik proxy
+      const response = await fetch(`${BACKEND_URL}/reports`, {
         method: 'GET',
+        credentials: 'include', // Включаем cookies для передачи сессии
         headers: {
-          // Передаем JWT токен в заголовке Authorization
-          'Authorization': `Bearer ${keycloak.token}`,
           'Content-Type': 'application/json',
         },
       });
 
-      // Получаем HTTP статус код
       const status = response.status;
-      
-      // Пытаемся распарсить JSON ответ
       let data = null;
       let error = null;
-      
+
       if (response.ok) {
-        // Если запрос успешен - парсим JSON
         data = await response.json();
       } else {
-        // Если ошибка - сохраняем текст ошибки
         error = await response.text();
       }
 
-      // Сохраняем результат в состояние
       setBackendResponse({ status, data, error });
     } catch (err) {
-      // Обрабатываем ошибки сети или парсинга
       console.error('Backend request failed:', err);
       setBackendResponse({
         status: 0,
@@ -119,14 +267,12 @@ export default function App() {
         error: err instanceof Error ? err.message : 'Unknown error',
       });
     } finally {
-      // Завершаем состояние загрузки
       setLoadingBackend(false);
     }
   };
 
-  // Проверяем, инициализирован ли Keycloak
-  if (!initialized) {
-    // Если нет, показываем индикатор загрузки
+  // Показываем индикатор загрузки
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-xl">Загрузка...</div>
@@ -134,45 +280,28 @@ export default function App() {
     );
   }
 
-  // Проверяем, аутентифицирован ли пользователь
-  if (!keycloak.authenticated) {
-    // Если нет, показываем экран входа
+  // Если пользователь не аутентифицирован, показываем экран входа
+  if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="max-w-md w-full p-8 bg-white rounded-2xl shadow">
           <h1 className="text-2xl font-bold mb-4">Вход в систему</h1>
           <p className="mb-6 text-gray-600">
-            Для доступа к приложению необходимо авторизоваться через Keycloak
+            Для доступа к приложению необходимо авторизоваться через Authentik
           </p>
           <button
-            // При клике вызываем метод login() из Keycloak с явным указанием PKCE
-            onClick={() => keycloak.login({
-              // Явно указываем использование PKCE (Proof Key for Code Exchange)
-              pkceMethod: 'S256',
-              // Используем query параметры вместо hash fragment
-              responseMode: 'query'
-            })}
+            onClick={handleLogin}
             className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg hover:bg-blue-700 transition"
           >
-            Войти через Keycloak
-          </button>
-          <button
-            // Позволяет принудительно завершить сессию Keycloak при необходимости
-            onClick={() => keycloak.logout({ redirectUri: window.location.origin })}
-            className="w-full mt-3 border border-red-500 text-red-600 py-3 px-4 rounded-lg hover:bg-red-50 transition"
-          >
-            Разлогиниться
+            Войти через Authentik
           </button>
           <p className="mt-4 text-sm text-gray-500">
-            Используется протокол OAuth 2.0 с PKCE (Proof Key for Code Exchange)
+            Authentik использует Keycloak как провайдер идентификации
           </p>
         </div>
       </div>
     );
   }
-
-  // Декодируем JWT токен для отображения
-  const decodedToken = keycloak.token ? decodeJWT(keycloak.token) : null;
 
   // Пользователь авторизован - показываем главную страницу
   return (
@@ -185,8 +314,7 @@ export default function App() {
               ✓ Вы авторизованы!
             </h1>
             <button
-              // При клике вызываем метод logout() из Keycloak
-              onClick={() => keycloak.logout({ redirectUri: window.location.origin })}
+              onClick={handleLogout}
               className="bg-red-600 text-white py-2 px-4 rounded-lg hover:bg-red-700 transition"
             >
               Выйти
@@ -194,42 +322,32 @@ export default function App() {
           </div>
         </div>
 
-        {/* Блок с информацией о JWT токене */}
+        {/* Блок с информацией о пользователе из Authentik */}
         <div className="bg-white rounded-2xl shadow p-6">
-          <h2 className="text-xl font-bold mb-4">Информация из JWT токена</h2>
-          {decodedToken && (
+          <h2 className="text-xl font-bold mb-4">Информация о пользователе (из Authentik)</h2>
+          {userInfo && (
             <div className="space-y-2">
-              {/* Отображаем основные поля токена */}
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div className="font-semibold">Пользователь:</div>
-                <div>{decodedToken.preferred_username || 'N/A'}</div>
-                
+                <div>{userInfo.preferred_username || userInfo.name || 'N/A'}</div>
+
                 <div className="font-semibold">Email:</div>
-                <div>{decodedToken.email || 'N/A'}</div>
-                
-                <div className="font-semibold">Имя:</div>
-                <div>{decodedToken.name || 'N/A'}</div>
-                
+                <div>{userInfo.email || 'N/A'}</div>
+
                 <div className="font-semibold">Subject (ID):</div>
-                <div className="break-all">{decodedToken.sub}</div>
-                
-                <div className="font-semibold">Роли:</div>
-                <div>{decodedToken.realm_access?.roles.join(', ') || 'N/A'}</div>
-                
-                <div className="font-semibold">Выдан:</div>
-                <div>{new Date(decodedToken.iat * 1000).toLocaleString('ru-RU')}</div>
-                
-                <div className="font-semibold">Истекает:</div>
-                <div>{new Date(decodedToken.exp * 1000).toLocaleString('ru-RU')}</div>
+                <div className="break-all">{userInfo.sub}</div>
+
+                <div className="font-semibold">Группы/Роли:</div>
+                <div>{userInfo.groups?.join(', ') || 'N/A'}</div>
               </div>
-              
-              {/* Полный JSON токена */}
+
+              {/* Полный JSON информации о пользователе */}
               <details className="mt-4">
                 <summary className="cursor-pointer font-semibold text-blue-600 hover:text-blue-800">
-                  Показать полный JWT payload (JSON)
+                  Показать полную информацию (JSON)
                 </summary>
                 <pre className="mt-2 p-4 bg-gray-100 rounded-lg overflow-auto text-xs">
-                  {JSON.stringify(decodedToken, null, 2)}
+                  {JSON.stringify(userInfo, null, 2)}
                 </pre>
               </details>
             </div>
@@ -239,7 +357,7 @@ export default function App() {
         {/* Блок для вызова бэкенда */}
         <div className="bg-white rounded-2xl shadow p-6">
           <h2 className="text-xl font-bold mb-4">Запрос к бэкенду</h2>
-          
+
           {/* Кнопка для вызова /reports */}
           <button
             onClick={fetchReports}
@@ -252,19 +370,19 @@ export default function App() {
           {/* Отображение результата запроса */}
           {backendResponse && (
             <div className="mt-4">
-              {/* HTTP статус код */}
               <div className="mb-2">
                 <span className="font-semibold">HTTP статус код: </span>
-                <span className={`font-mono ${
-                  backendResponse.status >= 200 && backendResponse.status < 300
-                    ? 'text-green-600'
-                    : 'text-red-600'
-                }`}>
+                <span
+                  className={`font-mono ${
+                    backendResponse.status >= 200 && backendResponse.status < 300
+                      ? 'text-green-600'
+                      : 'text-red-600'
+                  }`}
+                >
                   {backendResponse.status}
                 </span>
               </div>
 
-              {/* Данные ответа или ошибка */}
               {backendResponse.data ? (
                 <div>
                   <div className="font-semibold mb-2">Ответ от сервера:</div>
