@@ -73,19 +73,33 @@ entries:
       
       # URL для автоматического обнаружения конфигурации OIDC
       # Keycloak предоставляет этот endpoint со всеми необходимыми URL
-      # ⚠️ ВАЖНО: Используем localhost, так как браузер пользователя должен иметь доступ
-      # Authentik перенаправляет браузер на этот URL, поэтому нужен публичный адрес
-      oidc_well_known_url: http://localhost:8080/realms/reports-realm/.well-known/openid-configuration
+      # ⚠️ ВАЖНО: Используем внутреннее Docker DNS имя (keycloak) для server-to-server
+      # коммуникации. Authentik сервер использует этот URL для получения конфигурации.
+      # Браузер пользователя будет перенаправлен на URL из конфигурации Keycloak.
+      oidc_well_known_url: http://keycloak:8080/realms/reports-realm/.well-known/openid-configuration
       
       # URL для получения публичных ключей (JWKS) для проверки JWT токенов
-      # Также используем localhost для доступа из браузера
-      oidc_jwks_url: http://localhost:8080/realms/reports-realm/protocol/openid-connect/certs
+      # Также используем внутреннее имя для server-to-server коммуникации
+      oidc_jwks_url: http://keycloak:8080/realms/reports-realm/protocol/openid-connect/certs
+      
+      # ⚠️ ВАЖНО: Переопределяем token endpoint на внутренний адрес
+      # Keycloak возвращает localhost:8080 в .well-known, но из контейнера Authentik
+      # нужно использовать keycloak:8080 для server-to-server коммуникации
+      access_token_url: http://keycloak:8080/realms/reports-realm/protocol/openid-connect/token
       
       # Дополнительные OAuth scopes для запроса у Keycloak
       # openid - обязательный scope для OIDC
       # profile - запрашивает профильную информацию (имя, фамилия и т.д.)
       # email - запрашивает email пользователя
       additional_scopes: "openid profile email"
+      
+      # PKCE (Proof Key for Code Exchange) для защиты от CSRF атак
+      # Возможные значения: none, plain, S256
+      # S256 - использует SHA256 хеширование (рекомендуется)
+      # plain - отправляет code_verifier без хеширования (менее безопасно)
+      # none - PKCE отключен
+      # Keycloak требует S256
+      pkce: "S256"
 
   # ============================================================================
   # 2. OAuth2 Provider для фронтенда
@@ -120,11 +134,15 @@ entries:
       client_id: bionicpro-frontend
       
       # Разрешенные redirect URIs (куда Authentik может перенаправить после авторизации)
-      # Используется multiline string (|) для удобства
+      # ⚠️ В Authentik 2025.10+ это обязательное поле и должно быть списком объектов
+      # Каждый URI должен быть объектом с полями 'url' и 'matching_mode'
+      # matching_mode: strict (точное совпадение) или regex (регулярное выражение)
       # Фронтенд должен указывать один из этих URIs в параметре redirect_uri
-      redirect_uris: |
-        http://localhost:5173/callback
-        http://localhost:5173/*
+      redirect_uris:
+        - url: "http://localhost:5173/callback"
+          matching_mode: "strict"
+        - url: "http://localhost:5173/*"
+          matching_mode: "regex"
       
       # Режим генерации subject (sub) в JWT токене:
       # - hashed_user_id: хешированный ID пользователя (более приватный)

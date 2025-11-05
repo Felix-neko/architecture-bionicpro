@@ -20,6 +20,11 @@ services:
       KC_DB_URL: jdbc:postgresql://keycloak_db:5432/keycloak_db
       KC_DB_USERNAME: keycloak_user
       KC_DB_PASSWORD: keycloak_password
+      # Настройка frontend URL для правильных редиректов из браузера
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_PORT: 8080
+      KC_HOSTNAME_STRICT: false
+      KC_HTTP_ENABLED: true
     command: 
       - start-dev
       - --import-realm
@@ -79,7 +84,7 @@ services:
       timeout: 3s
       retries: 5
   authentik_server:
-    image: ghcr.io/goauthentik/server:2024.10.1
+    image: ghcr.io/goauthentik/server:2025.10
     command: server
     environment:
       AUTHENTIK_SECRET_KEY: "change-me-to-a-random-string-at-least-50-chars-long-please"
@@ -106,7 +111,7 @@ services:
       - authentik_templates:/templates
       - ./authentik-blueprints:/blueprints/custom:ro
   authentik_worker:
-    image: ghcr.io/goauthentik/server:2024.10.1
+    image: ghcr.io/goauthentik/server:2025.10
     command: worker
     environment:
       AUTHENTIK_SECRET_KEY: "change-me-to-a-random-string-at-least-50-chars-long-please"
