@@ -1,0 +1,488 @@
+# ============================================================================
+# Authentik Blueprint для автоматической настройки BionicPro
+# ============================================================================
+# Этот файл автоматически создает всю необходимую конфигурацию в Authentik:
+# - OAuth Source для подключения к Keycloak
+# - OAuth2 Provider для фронтенда
+# - Proxy Provider для бэкенда с инжекцией заголовков
+# - Applications для Frontend и Backend
+# - Groups для пользователей
+# - Property Mappings для передачи данных в заголовках
+# ============================================================================
+
+# Версия формата Blueprint (всегда 1)
+version: 1
+
+# Метаданные Blueprint
+metadata:
+  # Название Blueprint (отображается в Authentik UI)
+  name: BionicPro Initial Setup
+  
+  # Метки для управления Blueprint
+  labels:
+    # Эта метка указывает Authentik автоматически применить Blueprint при обнаружении
+    blueprints.goauthentik.io/instantiate: "true"
+
+# Список объектов для создания/обновления
+entries:
+  # ============================================================================
+  # 1. OAuth Source для Keycloak
+  # ============================================================================
+  # Настраивает Keycloak как внешний провайдер идентификации (IdP)
+  # Authentik будет перенаправлять пользователей в Keycloak для аутентификации
+  # ============================================================================
+  - model: authentik_sources_oauth.oauthsource  # Модель Django для OAuth источника
+    id: keycloak-source  # Внутренний ID для ссылок в этом Blueprint
+    
+    # Идентификаторы для поиска существующего объекта (если есть - обновит, если нет - создаст)
+    identifiers:
+      slug: keycloak  # Уникальный slug для URL (будет в /source/oauth/callback/keycloak/)
+    
+    # Атрибуты OAuth Source
+    attrs:
+      name: Keycloak  # Отображаемое имя в UI
+      enabled: true  # Источник активен и доступен для использования
+      
+      # Flow для аутентификации существующих пользователей
+      # !Find ищет существующий flow по slug
+      authentication_flow: !Find [authentik_flows.flow, [slug, default-source-authentication]]
+      
+      # Flow для регистрации новых пользователей
+      enrollment_flow: !Find [authentik_flows.flow, [slug, default-source-enrollment]]
+      
+      # Режим сопоставления пользователей:
+      # - email_link: связывает по email (если пользователь с таким email уже есть)
+      # - email_deny: запрещает вход, если email уже используется
+      # - username_link: связывает по username
+      # - username_deny: запрещает вход, если username уже используется
+      user_matching_mode: email_link
+      
+      # Шаблон пути для создания пользователей (где они будут храниться в Authentik)
+      # %(slug)s заменяется на slug источника (keycloak)
+      user_path_template: "goauthentik.io/sources/%(slug)s"
+      
+      # Тип провайдера OAuth (openidconnect для OIDC)
+      provider_type: openidconnect
+      
+      # Client ID для OAuth (должен совпадать с clientId в Keycloak)
+      consumer_key: authentik
+      
+      # Client Secret для OAuth (должен совпадать с secret в Keycloak)
+      # ⚠️ ВАЖНО: Замените на сложный секрет в production!
+      consumer_secret: authentik-secret-change-me-in-production
+      
+      # URL для автоматического обнаружения конфигурации OIDC
+      # Keycloak предоставляет этот endpoint со всеми необходимыми URL
+      # ⚠️ ВАЖНО: Используем внутреннее Docker DNS имя (keycloak) для server-to-server
+      # коммуникации. Authentik сервер использует этот URL для получения конфигурации.
+      # Браузер пользователя будет перенаправлен на URL из конфигурации Keycloak.
+      oidc_well_known_url: http://keycloak:8080/realms/reports-realm/.well-known/openid-configuration
+      
+      # URL для получения публичных ключей (JWKS) для проверки JWT токенов
+      # Также используем внутреннее имя для server-to-server коммуникации
+      oidc_jwks_url: http://keycloak:8080/realms/reports-realm/protocol/openid-connect/certs
+      
+      # ⚠️ ВАЖНО: Переопределяем token endpoint на внутренний адрес
+      # Keycloak возвращает localhost:8080 в .well-known, но из контейнера Authentik
+      # нужно использовать keycloak:8080 для server-to-server коммуникации
+      access_token_url: http://keycloak:8080/realms/reports-realm/protocol/openid-connect/token
+      
+      # ⚠️ ВАЖНО: Переопределяем profile (userinfo) endpoint на внутренний адрес
+      # Keycloak возвращает localhost:8080 в .well-known, но из контейнера Authentik
+      # нужно использовать keycloak:8080 для server-to-server коммуникации
+      profile_url: http://keycloak:8080/realms/reports-realm/protocol/openid-connect/userinfo
+      
+      # Дополнительные OAuth scopes для запроса у Keycloak
+      # openid - обязательный scope для OIDC
+      # profile - запрашивает профильную информацию (имя, фамилия и т.д.)
+      # email - запрашивает email пользователя
+      additional_scopes: "openid profile email"
+      
+      # PKCE (Proof Key for Code Exchange) для защиты от CSRF атак
+      # Возможные значения: none, plain, S256
+      # S256 - использует SHA256 хеширование (рекомендуется)
+      # plain - отправляет code_verifier без хеширования (менее безопасно)
+      # none - PKCE отключен
+      # Keycloak требует S256
+      pkce: "S256"
+
+  # ============================================================================
+  # 2. Custom Property Mappings для передачи ролей и дополнительных полей
+  # ============================================================================
+  # Property Mapping для передачи ролей пользователя в JWT токене
+  - model: authentik_providers_oauth2.scopemapping
+    id: custom-roles-mapping
+    identifiers:
+      name: "Custom Roles Mapping"
+    attrs:
+      scope_name: roles  # Scope name для запроса ролей
+      description: "Передает роли пользователя из Keycloak в JWT токен"
+      expression: |
+        from authentik.sources.oauth.models import UserOAuthSourceConnection
+        
+        # Получаем группы из Keycloak через OAuth connection
+        user_groups = []
+        try:
+            # Находим OAuth connection для пользователя от Keycloak source
+            conn = UserOAuthSourceConnection.objects.filter(
+                user=request.user,
+                source__slug="keycloak"
+            ).first()
+            
+            if conn and hasattr(conn, 'info'):
+                # Получаем группы из userinfo, которые вернул Keycloak
+                groups_data = conn.info.get('groups', [])
+                if groups_data:
+                    user_groups = groups_data
+        except Exception as e:
+            pass
+        
+        # Если группы не найдены, пробуем получить из ak_groups
+        if not user_groups:
+            user_groups = [group.name for group in request.user.ak_groups.all()]
+        
+        # Возвращаем роли в формате, совместимом с Keycloak
+        return {
+            "roles": user_groups,
+            "resource_access": {
+                "reports-api": {
+                    "roles": user_groups
+                }
+            }
+        }
+
+  # Property Mapping для передачи preferred_username
+  - model: authentik_providers_oauth2.scopemapping
+    id: custom-preferred-username-mapping
+    identifiers:
+      name: "Custom Preferred Username"
+    attrs:
+      scope_name: profile  # Добавляем к profile scope
+      description: "Передает preferred_username в JWT токен"
+      expression: |
+        return {
+            "preferred_username": request.user.username,
+            "given_name": request.user.name.split()[0] if request.user.name and ' ' in request.user.name else request.user.name,
+            "family_name": request.user.name.split()[-1] if request.user.name and ' ' in request.user.name else "",
+        }
+
+  # ============================================================================
+  # 3. OAuth2 Provider для фронтенда
+  # ============================================================================
+  # Настраивает Authentik как OAuth2/OIDC сервер для фронтенда
+  # Фронтенд будет использовать этот provider для аутентификации пользователей
+  # ============================================================================
+  - model: authentik_providers_oauth2.oauth2provider  # Модель для OAuth2/OIDC провайдера
+    id: frontend-provider  # Внутренний ID для ссылок в этом Blueprint
+    
+    # Идентификаторы для поиска существующего провайдера
+    identifiers:
+      name: BionicPro Frontend Provider  # Уникальное имя провайдера
+    
+    # Атрибуты OAuth2 Provider
+    attrs:
+      # Flow для авторизации (когда пользователь уже аутентифицирован)
+      # implicit-consent - автоматически дает согласие без запроса у пользователя
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      
+      # Flow для инвалидации сессии (logout)
+      # ⚠️ ОБЯЗАТЕЛЬНОЕ ПОЛЕ в новых версиях Authentik
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      
+      # Тип клиента:
+      # - public: для SPA/мобильных приложений (не может хранить секрет безопасно)
+      # - confidential: для серверных приложений (может хранить секрет)
+      client_type: public
+      
+      # Client ID для OAuth2 (используется фронтендом для идентификации)
+      # Должен совпадать с CLIENT_ID в bionicpro-frontend/src/App.tsx
+      client_id: bionicpro-frontend
+      
+      # Разрешенные redirect URIs (куда Authentik может перенаправить после авторизации)
+      # ⚠️ В Authentik 2025.10+ это обязательное поле и должно быть списком объектов
+      # Каждый URI должен быть объектом с полями 'url' и 'matching_mode'
+      # matching_mode: strict (точное совпадение) или regex (регулярное выражение)
+      # Фронтенд должен указывать один из этих URIs в параметре redirect_uri
+      redirect_uris:
+        - url: "http://localhost:5173/callback"
+          matching_mode: "strict"
+        - url: "http://localhost:5173/*"
+          matching_mode: "regex"
+      
+      # Режим генерации subject (sub) в JWT токене:
+      # - hashed_user_id: хешированный ID пользователя (более приватный)
+      # - user_id: прямой ID пользователя
+      # - user_username: username пользователя
+      # - user_email: email пользователя
+      # - user_upn: User Principal Name
+      sub_mode: hashed_user_id
+      
+      # Включить claims (данные пользователя) в id_token
+      # Если true, фронтенд может получить данные пользователя из id_token
+      # Если false, нужно делать отдельный запрос к /userinfo
+      include_claims_in_id_token: true
+      
+      # Ключ для подписи JWT токенов
+      # !Find ищет существующий сертификат по имени
+      # Authentik автоматически создает самоподписанный сертификат при установке
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      
+      # Property Mappings - определяют, какие данные включать в токены
+      # Эти mappings добавляют стандартные OIDC claims (openid, email, profile) и custom claims (roles)
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]  # sub, iss, aud и т.д.
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]   # email, email_verified
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]] # name, given_name, family_name и т.д.
+        - !KeyOf custom-roles-mapping  # Добавляем custom mapping для ролей
+        - !KeyOf custom-preferred-username-mapping  # Добавляем custom mapping для preferred_username
+      
+      # Время жизни access token (24 часа)
+      # После истечения фронтенд должен обновить токен через refresh token
+      access_token_validity: hours=24
+      
+      # Время жизни refresh token (30 дней)
+      # После истечения пользователь должен войти заново
+      # ⚠️ В нашей архитектуре refresh token хранится в Authentik, не в браузере!
+      refresh_token_validity: days=30
+      
+      # Back-channel logout configuration
+      # Когда пользователь выходит из Authentik, Authentik отправит logout запрос в Keycloak
+      backchannel_logout_session_required: true  # Включить back-channel logout
+
+  # ============================================================================
+  # 3. Application для фронтенда
+  # ============================================================================
+  # Application - это логическая группировка провайдера и политик доступа
+  # Отображается в Authentik UI и может быть назначена пользователям/группам
+  # ============================================================================
+  - model: authentik_core.application  # Модель для приложения
+    id: frontend-app  # Внутренний ID для ссылок в этом Blueprint
+    
+    # Идентификаторы для поиска существующего приложения
+    identifiers:
+      slug: bionicpro-frontend  # Уникальный slug (используется в URL)
+    
+    # Атрибуты приложения
+    attrs:
+      name: BionicPro Frontend  # Отображаемое имя в UI
+      
+      # Связь с провайдером (созданным выше)
+      # !KeyOf ссылается на ID объекта, созданного в этом Blueprint
+      provider: !KeyOf frontend-provider
+      
+      # URL для запуска приложения (отображается в UI как кнопка)
+      meta_launch_url: http://localhost:5173
+      
+      # Описание приложения (отображается в UI)
+      meta_description: BionicPro Frontend Application
+      
+      # Издатель приложения (отображается в UI)
+      meta_publisher: BionicPro Team
+      
+      # Режим работы policy engine:
+      # - any: доступ разрешен, если хотя бы одна политика разрешает
+      # - all: доступ разрешен, только если все политики разрешают
+      policy_engine_mode: any
+      
+      # Открывать ли приложение в новой вкладке при клике на Launch URL
+      open_in_new_tab: false
+
+  # ============================================================================
+  # 4. Proxy Provider для бэкенда
+  # ============================================================================
+  # Настраивает Authentik как прокси для бэкенда
+  # Authentik будет перехватывать запросы и инжектировать заголовки с данными пользователя
+  # ============================================================================
+  - model: authentik_providers_proxy.proxyprovider  # Модель для Proxy провайдера
+    id: backend-proxy-provider  # Внутренний ID для ссылок в этом Blueprint
+    
+    # Идентификаторы для поиска существующего провайдера
+    identifiers:
+      name: BionicPro Backend Proxy  # Уникальное имя провайдера
+    
+    # Атрибуты Proxy Provider
+    attrs:
+      # Flow для авторизации (проверка прав доступа)
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      
+      # Flow для инвалидации сессии (logout)
+      # ⚠️ ОБЯЗАТЕЛЬНОЕ ПОЛЕ в новых версиях Authentik (также требуется для Proxy Provider)
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-invalidation-flow]]
+      
+      # Режим работы прокси:
+      # - proxy: полный прокси (Authentik проксирует весь трафик)
+      # - forward_single: forward auth для одного приложения (nginx auth_request)
+      # - forward_domain: forward auth для домена (nginx auth_request с поддоменами)
+      # В нашем случае используем forward_single - Authentik только проверяет auth и добавляет заголовки
+      mode: forward_single
+      
+      # External host - URL, по которому приложение доступно извне (для пользователей)
+      external_host: http://localhost:3001
+      
+      # Internal host - URL, по которому Authentik может достучаться до приложения
+      # host.docker.internal - специальный DNS для доступа к хосту из Docker контейнера
+      # Альтернативы: имя сервиса Docker, если бэкенд тоже в Docker
+      internal_host: http://host.docker.internal:3001
+      
+      # Время жизни токена для прокси (24 часа)
+      token_validity: hours=24
+      
+      # Property Mappings - определяют, какие заголовки добавлять в запросы
+      # Добавляем стандартные OAuth scopes
+      # ⚠️ ПРИМЕЧАНИЕ: Кастомные заголовки X-Authentik-* нужно добавить вручную через UI
+      # или создать отдельный blueprint с ScopeMapping после первого запуска
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+      
+      # Включить ли HTTP Basic Authentication
+      # false - не использовать Basic Auth (мы используем заголовки)
+      basic_auth_enabled: false
+      
+      # Атрибут пользователя для Basic Auth username (если enabled=true)
+      basic_auth_username_attribute: username
+      
+      # Перехватывать ли заголовок Authorization для аутентификации
+      # true - Authentik будет проверять заголовок Authorization, если он есть
+      intercept_header_auth: true
+
+  # ============================================================================
+  # 5. Application для бэкенда
+  # ============================================================================
+  # Application для бэкенда API
+  # Связывает Proxy Provider с UI и политиками доступа
+  # ============================================================================
+  - model: authentik_core.application  # Модель для приложения
+    id: backend-app  # Внутренний ID для ссылок
+    
+    # Идентификаторы
+    identifiers:
+      slug: bionicpro-backend  # Уникальный slug
+    
+    # Атрибуты приложения
+    attrs:
+      name: BionicPro Backend  # Отображаемое имя
+      
+      # Связь с Proxy Provider (созданным выше)
+      provider: !KeyOf backend-proxy-provider
+      
+      # URL для запуска (обычно не используется для API)
+      meta_launch_url: http://localhost:3001
+      
+      # Описание приложения
+      meta_description: BionicPro Backend API
+      
+      # Издатель
+      meta_publisher: BionicPro Team
+      
+      # Режим policy engine
+      policy_engine_mode: any
+      
+      # Не открывать в новой вкладке
+      open_in_new_tab: false
+
+  # ============================================================================
+  # 6. Group для администраторов
+  # ============================================================================
+  # Создает группу для администраторов системы
+  # Группы используются для управления доступом и передаются в заголовке X-Authentik-Groups
+  # ============================================================================
+  - model: authentik_core.group  # Модель для группы
+    id: admin-group  # Внутренний ID
+    
+    # Идентификаторы
+    identifiers:
+      name: Administrators  # Уникальное имя группы
+    
+    # Атрибуты группы
+    attrs:
+      # Является ли группа суперпользователями (полный доступ к Authentik)
+      # false - обычная группа, не дает прав администратора Authentik
+      is_superuser: false
+      
+      # Родительская группа (для иерархии групп)
+      # null - нет родительской группы (это группа верхнего уровня)
+      parent: null
+
+  # ============================================================================
+  # 7. Group для пользователей
+  # ============================================================================
+  # Создает группу для обычных пользователей
+  # ============================================================================
+  - model: authentik_core.group  # Модель для группы
+    id: users-group  # Внутренний ID
+    
+    # Идентификаторы
+    identifiers:
+      name: Users  # Уникальное имя группы
+    
+    # Атрибуты группы
+    attrs:
+      # Не суперпользователи
+      is_superuser: false
+      
+      # Нет родительской группы
+      parent: null
+
+  # ============================================================================
+  # 8. Настройка Identification Stage для отображения кнопки Keycloak
+  # ============================================================================
+  # Обновляем default-authentication-identification stage, чтобы показывать
+  # кнопку для входа через Keycloak на странице аутентификации
+  # ============================================================================
+  - model: authentik_stages_identification.identificationstage  # Модель для Identification Stage
+    id: identification-stage-update  # Внутренний ID для ссылок
+    
+    # Идентификаторы для поиска существующего stage
+    identifiers:
+      name: default-authentication-identification  # Имя стандартного stage
+    
+    # Атрибуты stage
+    attrs:
+      # Список источников (sources), которые будут показаны как кнопки на странице входа
+      # !KeyOf ссылается на OAuth Source, созданный в секции 1
+      sources:
+        - !KeyOf keycloak-source  # Добавляем Keycloak source
+      
+      # Поля для идентификации пользователя
+      # username: пользователь может ввести username
+      # email: пользователь может ввести email
+      user_fields:
+        - username
+        - email
+      
+      # Режим сопоставления пароля
+      # Если пользователь вводит email, но в системе есть только username
+      password_stage: !Find [authentik_stages_password.passwordstage, [name, default-authentication-password]]
+      
+      # Показывать ли matched user (пользователя, найденного по email/username)
+      show_matched_user: true
+      
+      # Показывать ли кнопки источников (OAuth, SAML и т.д.)
+      # true - кнопки будут видны
+      show_source_labels: true
+      
+      # Режим enrollment (регистрации)
+      # Если пользователь не найден, можно ли зарегистрироваться
+      enrollment_flow: !Find [authentik_flows.flow, [slug, default-source-enrollment]]
+
+# ============================================================================
+# Конец Blueprint
+# ============================================================================
+# После применения этого Blueprint в Authentik будут созданы:
+# 1. OAuth Source "Keycloak" для федерации с Keycloak
+# 2. OAuth2 Provider "BionicPro Frontend Provider" для фронтенда
+# 3. Application "BionicPro Frontend" для фронтенда
+# 4. Proxy Provider "BionicPro Backend Proxy" для бэкенда
+# 5. Application "BionicPro Backend" для бэкенда
+# 6. Group "Administrators" для админов
+# 7. Group "Users" для пользователей
+# 8. Identification Stage настроен для отображения кнопки Keycloak
+#
+# ⚠️ ВАЖНО: Property Mappings для заголовков X-Authentik-* нужно добавить вручную
+# через Authentik UI после первого запуска, так как они требуют специальную
+# конфигурацию, которая сложна для автоматизации через Blueprint.
+#
+# Инструкция по добавлению заголовков вручную см. в AUTHENTIK_SETUP.md
+# ============================================================================

@@ -48,26 +48,25 @@ app.add_middleware(
 )
 
 
-# Определяем класс конфигурации для параметров Authentik/Keycloak
-class KeycloakConfig:
-    # Указываем адрес издателя токенов - теперь это Authentik
+# Определяем класс конфигурации для параметров Authentik
+class AuthentikConfig:
+    # Указываем адрес издателя токенов - Authentik
     issuer: str = "http://localhost:9000/application/o/bionicpro-frontend/"
     # Формируем URL для получения открытых ключей (JWKS) Authentik
     jwks_url: str = "http://localhost:9000/application/o/bionicpro-frontend/jwks/"
-    # Указываем ожидаемую аудиторию (client_id) токена для backend-а
-    # Для Authentik это client_id фронтенда
+    # Указываем ожидаемую аудиторию (client_id) токена
     audience: str | None = "bionicpro-frontend"
     # Указываем допустимые алгоритмы подписи токена
     algorithms: tuple[str, ...] = ("RS256",)
 
 
-# Определяем асинхронную функцию для получения JWKS с сервера Keycloak
+# Определяем асинхронную функцию для получения JWKS с сервера Authentik
 async def get_jwks() -> Dict[str, Any]:
     # Создаем асинхронный HTTP-клиент с таймаутом в 5 секунд
     async with httpx.AsyncClient(timeout=5) as client:
         # Выполняем GET-запрос на получение набора ключей
-        response = await client.get(KeycloakConfig.jwks_url)
-        # Бросаем исключение, если Keycloak вернул ошибку
+        response = await client.get(AuthentikConfig.jwks_url)
+        # Бросаем исключение, если Authentik вернул ошибку
         response.raise_for_status()
         # Возвращаем тело ответа в виде словаря
         return response.json()
@@ -186,6 +185,69 @@ async def verify_jwt(
     return payload
 
 
+# Определяем зависимость FastAPI для получения JWT из заголовка X-authentik-jwt
+# Этот заголовок добавляет Authentik Proxy Provider
+async def verify_authentik_proxy_jwt(
+    x_authentik_jwt: Optional[str] = Header(default=None, alias="X-authentik-jwt"),
+    jwks: Dict[str, Any] = Depends(get_jwks),
+) -> Dict[str, Any]:
+    """
+    Проверяет JWT токен из заголовка X-authentik-jwt, который добавляет Authentik Proxy.
+    """
+    # Проверяем, что заголовок X-authentik-jwt присутствует
+    if not x_authentik_jwt:
+        logging.warning("Missing X-authentik-jwt header")
+        raise HTTPException(status_code=401, detail="Missing X-authentik-jwt header from Authentik Proxy")
+
+    token = x_authentik_jwt
+    
+    # Пытаемся получить заголовок токена без проверки подписи
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt_exceptions.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid token header") from exc
+
+    logging.info("Token header kid: %s", header.get("kid"))
+
+    # Ищем подходящий ключ в JWKS по идентификатору ключа (kid)
+    key_dict = next((k for k in jwks.get("keys", []) if k.get("kid") == header.get("kid")), None)
+    if not key_dict:
+        logging.error("Public key not found for kid: %s", header.get("kid"))
+        raise HTTPException(status_code=401, detail="Token signature key not found")
+
+    logging.info("Key found for kid: %s", header.get("kid"))
+
+    # Преобразуем найденный JWK в объект RSA-ключа
+    public_key = RSAAlgorithm.from_jwk(json.dumps(key_dict))
+
+    # Пытаемся декодировать и проверить токен с использованием публичного ключа
+    try:
+        # Получаем payload без проверки для диагностики
+        unverified_payload = jwt.decode(token, options={"verify_signature": False})
+        logging.info("Token payload audience: %s", unverified_payload.get("aud"))
+        logging.info("Token payload issuer: %s", unverified_payload.get("iss"))
+
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=list(AuthentikConfig.algorithms),
+            audience=AuthentikConfig.audience,
+            issuer=AuthentikConfig.issuer,
+        )
+        logging.info("Token decoded successfully")
+    except jwt_exceptions.ExpiredSignatureError as exc:
+        logging.error("Token expired: %s", exc)
+        raise HTTPException(status_code=401, detail="Token expired") from exc
+    except (jwt_exceptions.InvalidAudienceError, jwt_exceptions.InvalidIssuerError) as exc:
+        logging.error("Invalid token claims: %s", exc)
+        raise HTTPException(status_code=401, detail="Invalid token claims") from exc
+    except jwt_exceptions.PyJWTError as exc:
+        logging.error("Invalid token: %s", exc)
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
+
+    return payload
+
+
 # Описываем маршрут GET /reports, который требует аутентификацию через Authentik
 @app.get("/reports")
 async def get_reports(user_info: Dict[str, Any] = Depends(get_user_from_headers)) -> Dict[str, Any]:
@@ -202,28 +264,25 @@ async def get_reports(user_info: Dict[str, Any] = Depends(get_user_from_headers)
     }
 
 
-# Альтернативный маршрут для проверки JWT напрямую (для отладки)
+# Маршрут для проверки JWT из заголовка X-authentik-jwt (Authentik Proxy)
 @app.get("/reports-jwt")
-async def get_reports_jwt(payload: Dict[str, Any] = Depends(verify_jwt)) -> Dict[str, Any]:
+async def get_reports_jwt(payload: Dict[str, Any] = Depends(verify_authentik_proxy_jwt)) -> Dict[str, Any]:
     # Логируем полезную нагрузку токена в формате JSON
-    logging.info("JWT payload: %s", json.dumps(payload))
+    logging.info("JWT payload from X-authentik-jwt: %s", json.dumps(payload))
     
     # Формируем информацию о пользователе из JWT payload
+    # Authentik использует немного другие поля, чем Keycloak
     user_info = {
         "username": payload.get("preferred_username") or payload.get("sub"),
         "email": payload.get("email"),
-        "groups": payload.get("groups", []),
         "roles": payload.get("roles", []),
-        "resource_access": payload.get("resource_access", {}),
-        "given_name": payload.get("given_name"),
-        "family_name": payload.get("family_name"),
-        "uid": payload.get("sub"),
-        "authenticated_via": "JWT Token (Authentik)",
+        "first_name": payload.get("given_name") or payload.get("first_name"),
+        "last_name": payload.get("family_name") or payload.get("last_name"),
     }
     
     # Возвращаем ту же структуру, что и /reports
     return {
-        "message": "Successfully authenticated via JWT",
+        "message": "Successfully authenticated via JWT from Authentik Proxy",
         "user": user_info,
         "reports": [
             {"id": 1, "name": "Report 1", "status": "completed"},

@@ -1,45 +1,7 @@
 version: '3.8'
 
 services:
-  keycloak_db:
-    image: postgres:14
-    environment:
-      POSTGRES_DB: keycloak_db
-      POSTGRES_USER: keycloak_user
-      POSTGRES_PASSWORD: keycloak_password
-#    volumes:
-#      - ./postgres-keycloak-data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.4
-    environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://keycloak_db:5432/keycloak_db
-      KC_DB_USERNAME: keycloak_user
-      KC_DB_PASSWORD: keycloak_password
-      # Настройка frontend URL для правильных редиректов из браузера
-      KC_HOSTNAME: localhost
-      KC_HOSTNAME_PORT: 8080
-      KC_HOSTNAME_STRICT: false
-      KC_HTTP_ENABLED: true
-    command: 
-      - start-dev
-      - --import-realm
-    volumes:
-      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
-    ports:
-      - "8080:8080"
-    healthcheck:
-      test: ["CMD-SHELL", "timeout 3 bash -c 'exec 3<>/dev/tcp/localhost/8080'" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 20s
-    depends_on:
-      - keycloak_db
+  # LDAP сервер для User Federation
   openldap-zambia:
     image: osixia/openldap:1.5.0
     environment:
@@ -54,6 +16,7 @@ services:
       - ./ldap:/seed-ldif
     ports:
       - "389:389"
+  # Web UI для управления LDAP
   phpldapadmin:
     image: osixia/phpldapadmin:latest
     environment:
@@ -104,8 +67,8 @@ services:
         condition: service_healthy
       authentik_redis:
         condition: service_healthy
-      keycloak:
-        condition: service_healthy
+      openldap-zambia:
+        condition: service_started
     volumes:
       - authentik_media:/media
       - authentik_templates:/templates
@@ -126,23 +89,42 @@ services:
         condition: service_healthy
       authentik_redis:
         condition: service_healthy
-      keycloak:
-        condition: service_healthy
+      openldap-zambia:
+        condition: service_started
     volumes:
       - authentik_media:/media
       - authentik_templates:/templates
       - ./authentik-blueprints:/blueprints/custom:ro
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+  # Удалено: frontend больше не нужен в docker-compose
+  # Фронтенд запускается отдельно через npm run dev
+  
+  # Traefik как reverse proxy с Authentik forward auth
+  traefik:
+    image: traefik:v2.10
+    command:
+      # Включаем API и dashboard
+      - "--api.insecure=true"
+      # Используем Docker provider
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Используем File provider для динамической конфигурации
+      - "--providers.file.filename=/etc/traefik/dynamic-config.yml"
+      - "--providers.file.watch=true"
+      # Настройка entrypoints
+      - "--entrypoints.web.address=:80"
+      # Логирование
+      - "--log.level=DEBUG"
+      - "--accesslog=true"
     ports:
-      - "3000:3000"
-    environment:
-      REACT_APP_API_URL: http://localhost:8000
-      REACT_APP_KEYCLOAK_URL: http://localhost:8080
-      REACT_APP_KEYCLOAK_REALM: reports-realm
-      REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+      - "7777:80"      # HTTP порт для доступа к приложениям
+      - "7778:8080"    # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dynamic-config.yml:/etc/traefik/dynamic-config.yml:ro
+    depends_on:
+      - authentik_server
+    networks:
+      - default
 
 volumes:
   authentik_media:
