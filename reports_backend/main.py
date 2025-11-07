@@ -63,24 +63,27 @@ async def get_jwks() -> Dict[str, Any]:
     async with httpx.AsyncClient(timeout=5) as client:
         # Выполняем GET-запрос на получение набора ключей
         response = await client.get(KeycloakConfig.jwks_url)
-        # Бросаем исключение, если Keycloak вернул ошибку
         response.raise_for_status()
         # Возвращаем тело ответа в виде словаря
         return response.json()
 
 
-# Определяем зависимость FastAPI для проверки JWT-токена в заголовке Authorization
+# Определяем зависимость FastAPI для проверки JWT-токена в заголовке Authorization или X-Forwarded-Access-Token
 async def verify_jwt(
     authorization: str = Header(default=None),
-    jwks: Dict[str, Any] = Depends(get_jwks),
+    x_forwarded_access_token: str = Header(default=None, alias="X-Forwarded-Access-Token"),
+    jwks: Dict[str, Any] = Depends(get_jwks)
 ) -> Dict[str, Any]:
     # Проверяем, что заголовок Authorization присутствует и содержит схему Bearer
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if authorization and authorization.lower().startswith("bearer "):
+        # Извлекаем сам токен из заголовка Authorization
+        token = authorization.split(" ", 1)[1]
+    elif x_forwarded_access_token:
+        # Извлекаем сам токен из заголовка X-Forwarded-Access-Token (от oauth2-proxy)
+        token = x_forwarded_access_token
+    else:
         # Возвращаем ошибку 401, если токен отсутствует
         raise HTTPException(status_code=401, detail="Missing Bearer token")
-
-    # Извлекаем сам токен из заголовка Authorization
-    token = authorization.split(" ", 1)[1]
     # Пытаемся получить заголовок токена без проверки подписи
     try:
         header = jwt.get_unverified_header(token)
@@ -125,8 +128,9 @@ async def verify_jwt(
         )
         logging.info("Token decoded successfully")
         
-        # Дополнительная проверка: токен должен быть выдан для reports-frontend
-        if payload.get("azp") not in ["reports-frontend", "reports-api"]:
+        # Дополнительная проверка: токен должен быть выдан для известных клиентов
+        # oauth2-proxy также является валидным клиентом
+        if payload.get("azp") not in ["reports-frontend", "reports-api", "oauth2-proxy"]:
             logging.error("Token not issued for expected client. azp=%s", payload.get("azp"))
             raise HTTPException(status_code=401, detail="Token not issued for this application")
     # Обрабатываем ошибку истечения срока действия токена

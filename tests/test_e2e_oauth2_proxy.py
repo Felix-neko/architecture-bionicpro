@@ -34,11 +34,11 @@ class TestServiceAvailability:
         # Используем httpx для проверки доступности
         response = httpx.get(backend_url, timeout=10.0)
         
-        # Проверяем, что получили ответ 404 с {"detail":"Not Found"}
-        assert response.status_code == 404, f"Ожидали статус 404, получили: {response.status_code}"
+        # Проверяем, что получили ответ 200 с "Hello world"
+        assert response.status_code == 200, f"Ожидали статус 200, получили: {response.status_code}"
         
         response_data = response.json()
-        assert response_data == {"detail": "Not Found"}, f"Неожиданный ответ: {response_data}"
+        assert response_data == "Hello world", f"Неожиданный ответ: {response_data}"
         
         print(f"✓ Бэкенд доступен, статус код: {response.status_code}")
         print(f"✓ Ответ бэкенда: {response_data}")
@@ -47,6 +47,31 @@ class TestServiceAvailability:
 
 class TestOAuth2ProxyAuthentication:
     """Тесты авторизации через OAuth2 Proxy."""
+    
+    def test_auto_redirect_when_not_authenticated(
+        self,
+        page: Page
+    ):
+        """Тест автоматического редиректа при отсутствии авторизации."""
+        print(f"\n=== Тест: Автоматический редирект при отсутствии авторизации ===")
+        
+        # Очищаем cookies чтобы симулировать неавторизованного пользователя
+        page.context.clear_cookies()
+        
+        # Открываем фронтенд напрямую (localhost:5173)
+        print(f"1. Открываем фронтенд: http://localhost:5173")
+        page.goto("http://localhost:5173")
+        
+        # Ждем редиректа на oauth2-proxy
+        print("2. Ожидаем автоматического редиректа на oauth2-proxy")
+        page.wait_for_url("http://localhost:4180/oauth2/sign_in*", timeout=10000)
+        
+        current_url = page.url
+        print(f"✓ Автоматический редирект выполнен на: {current_url}")
+        assert "4180" in current_url, "Должен быть редирект на oauth2-proxy"
+        assert "sign_in" in current_url, "Должен быть редирект на sign_in"
+        
+        print(f"=== Тест завершен успешно ===\n")
     
     def test_login_flow_via_oauth2_proxy(
         self,
@@ -65,11 +90,11 @@ class TestOAuth2ProxyAuthentication:
         current_url = page.url
         print(f"✓ Страница загружена, текущий URL: {current_url}")
         
-        # Шаг 2: Нажимаем кнопку "Sign in with Keycloak" если она есть
+        # Шаг 2: Нажимаем кнопку "Sign in with OpenID Connect" если она есть
         print("2. Проверяем наличие кнопки входа OAuth2 Proxy")
-        sign_in_button = page.locator('button:has-text("Sign in with Keycloak")')
+        sign_in_button = page.locator('button:has-text("Sign in with OpenID Connect"), button:has-text("Sign in with Keycloak")')
         if sign_in_button.is_visible():
-            print("✓ Найдена кнопка 'Sign in with Keycloak', нажимаем...")
+            print("✓ Найдена кнопка входа, нажимаем...")
             # Используем Promise.all для ожидания навигации
             with page.expect_navigation(timeout=10000):
                 sign_in_button.click(timeout=5000)
@@ -137,6 +162,28 @@ class TestOAuth2ProxyAuthentication:
         # Шаг 7: Проверяем, что фронтенд после редиректа что-то показывает
         print("7. Проверяем содержимое страницы после авторизации")
         
+        # Проверяем наличие информации об Access Token
+        print("8. Проверяем наличие информации об Access Token")
+        time.sleep(2)  # Даем время на загрузку токена
+        
+        # Проверяем, есть ли декодированный токен или сообщение о его недоступности
+        jwt_token_available = page.locator('text=/Декодированный Access Token JWT/')
+        jwt_token_unavailable = page.locator('text=/Access Token недоступен для JavaScript/')
+        
+        if jwt_token_available.is_visible():
+            print("✓ Найден раздел с декодированным JWT токеном")
+            # Проверяем, что есть кнопка для раскрытия содержимого
+            show_jwt_button = page.locator('summary:has-text("Показать содержимое JWT токена")')
+            if show_jwt_button.is_visible():
+                print("✓ Найдена кнопка для отображения JWT токена")
+            else:
+                print("⚠ Кнопка для отображения JWT токена не найдена")
+        elif jwt_token_unavailable.is_visible():
+            print("✓ Найдено сообщение о том, что Access Token недоступен для JavaScript (это нормально)")
+            print("  Токен хранится в HTTP-only cookie и защищен от XSS-атак")
+        else:
+            print("⚠ Не найдена информация об Access Token")
+        
         # Делаем скриншот для визуальной проверки
         screenshot_path = "/tmp/oauth2_proxy_auth_success.png"
         page.screenshot(path=screenshot_path)
@@ -165,10 +212,10 @@ class TestOAuth2ProxyAuthentication:
         
         current_url = page.url
         
-        # Проверяем, есть ли кнопка "Sign in with Keycloak"
-        sign_in_button = page.locator('button:has-text("Sign in with Keycloak")')
+        # Проверяем, есть ли кнопка входа
+        sign_in_button = page.locator('button:has-text("Sign in with OpenID Connect"), button:has-text("Sign in with Keycloak")')
         if sign_in_button.is_visible():
-            print("   Нажимаем кнопку 'Sign in with Keycloak'...")
+            print("   Нажимаем кнопку входа...")
             with page.expect_navigation(timeout=10000):
                 sign_in_button.click(timeout=5000)
             time.sleep(2)
@@ -202,12 +249,13 @@ class TestOAuth2ProxyAuthentication:
         print(body_text[:500])
         
         # Проверяем, что мы на правильной странице
-        if "Sign in with Keycloak" in body_text:
+        if "Sign in with" in body_text and "OpenID Connect" in body_text:
             print("✗ Ошибка: пользователь не авторизован, показывается страница входа OAuth2 Proxy")
             page.screenshot(path="/tmp/oauth2_not_authorized.png")
             raise AssertionError("Пользователь не авторизован")
         
-        reports_button = page.locator('button:has-text("Вызвать GET /api/reports")')
+        # Ищем кнопку для вызова бэкенда (может быть "Вызвать GET /reports" или "Вызвать GET /api/reports")
+        reports_button = page.locator('button:has-text("Вызвать GET")')
         expect(reports_button).to_be_visible(timeout=10000)
         reports_button.click()
         
@@ -222,9 +270,8 @@ class TestOAuth2ProxyAuthentication:
         if error_div.is_visible():
             error_text = error_div.inner_text()
             print(f"⚠ Обнаружена ошибка на странице: {error_text}")
-            raise AssertionError(f"Бэкенд вернул ошибку: {error_text}")
-        else:
-            print("✓ Ошибок на странице не обнаружено")
+            # Не бросаем ошибку сразу, так как может быть 401 из-за архитектуры
+            print(f"⚠ Ошибка: {error_text}")
         
         # Проверяем, что есть ответ от бэкенда
         status_code_element = page.locator('text=/HTTP статус код:/')
@@ -232,28 +279,22 @@ class TestOAuth2ProxyAuthentication:
             status_text = page.locator('span.font-mono').first.inner_text()
             print(f"✓ HTTP статус код от бэкенда: {status_text}")
             
-            # NOTE: Получаем 401, потому что Vite proxy перенаправляет запросы напрямую на бэкенд,
-            # минуя OAuth2 Proxy, поэтому Authorization заголовок не добавляется.
-            # Для полной интеграции нужно настроить nginx или использовать другую архитектуру.
-            # Но OAuth2 Proxy работает корректно - авторизация проходит успешно!
-            assert status_text in ["200", "401"], f"Неожиданный статус: {status_text}"
+            # Теперь ожидаем только 200, так как бэкенд принимает токены от oauth2-proxy
+            assert status_text == "200", f"Ожидали статус 200, получили: {status_text}"
             
-            if status_text == "200":
-                print("✓ Бэкенд вернул успешный ответ")
-                # Проверяем, что есть ответ от сервера
-                response_section = page.locator('text=/Ответ от сервера:/')
-                if response_section.is_visible():
-                    print("✓ Получен ответ от бэкенда")
-                    
-                    # Получаем JSON ответ
-                    response_json = page.locator('pre.bg-gray-100').nth(1).inner_text()
-                    print(f"✓ Ответ содержит данные ({len(response_json)} символов)")
-                    
-                    # Проверяем, что в ответе есть payload
-                    assert "payload" in response_json, "Ответ не содержит поле 'payload'"
-                    print("✓ Ответ содержит поле 'payload' с данными JWT")
-            else:
-                print("⚠ Бэкенд вернул 401 (ожидаемо для текущей архитектуры без nginx)")
+            print("✓ Бэкенд вернул успешный ответ")
+            # Проверяем, что есть JWT токен
+            jwt_section = page.locator('text=/Содержимое JWT-токена/')
+            expect(jwt_section).to_be_visible(timeout=5000)
+            print("✓ Получен JWT токен от бэкенда")
+            
+            # Получаем JSON ответ
+            response_json = page.locator('pre.bg-gray-100').nth(1).inner_text()
+            print(f"✓ Ответ содержит данные ({len(response_json)} символов)")
+            
+            # Проверяем, что в ответе есть payload
+            assert "payload" in response_json, "Ответ не содержит поле 'payload'"
+            print("✓ Ответ содержит поле 'payload' с данными JWT")
         
         # Делаем скриншот
         screenshot_path = "/tmp/oauth2_proxy_backend_call.png"
@@ -284,8 +325,8 @@ class TestFullE2EFlowWithOAuth2Proxy:
         # 2. Проверка доступности бэкенда
         print("2. Проверка доступности бэкенда")
         response = httpx.get(backend_url, timeout=10.0)
-        assert response.status_code == 404
-        assert response.json() == {"detail": "Not Found"}
+        assert response.status_code == 200
+        assert response.json() == "Hello world"
         print(f"✓ Бэкенд доступен")
         
         # 3. Открываем приложение через OAuth2 Proxy
@@ -299,10 +340,10 @@ class TestFullE2EFlowWithOAuth2Proxy:
         print("4. Авторизация через Keycloak")
         current_url = page.url
         
-        # Проверяем, есть ли кнопка "Sign in with Keycloak"
-        sign_in_button = page.locator('button:has-text("Sign in with Keycloak")')
+        # Проверяем, есть ли кнопка входа
+        sign_in_button = page.locator('button:has-text("Sign in with OpenID Connect"), button:has-text("Sign in with Keycloak")')
         if sign_in_button.is_visible():
-            print("   Нажимаем кнопку 'Sign in with Keycloak'...")
+            print("   Нажимаем кнопку входа...")
             with page.expect_navigation(timeout=10000):
                 sign_in_button.click(timeout=5000)
             time.sleep(2)
@@ -334,16 +375,21 @@ class TestFullE2EFlowWithOAuth2Proxy:
         
         # 6. Вызов бэкенда
         print("6. Вызов бэкенда через OAuth2 Proxy")
-        reports_button = page.locator('button:has-text("Вызвать GET /api/reports")')
+        reports_button = page.locator('button:has-text("Вызвать GET")')
         expect(reports_button).to_be_visible(timeout=10000)
         reports_button.click()
         time.sleep(3)
         
         # 7. Проверка ответа
         print("7. Проверка ответа от бэкенда")
-        error_div = page.locator('div.bg-red-50, div.bg-red-100')
-        assert not error_div.is_visible(), "Обнаружена ошибка на странице"
-        print(f"✓ Бэкенд вернул успешный ответ")
+        # Проверяем статус код
+        status_code_element = page.locator('text=/HTTP статус код:/')
+        expect(status_code_element).to_be_visible(timeout=5000)
+        status_text = page.locator('span.font-mono').first.inner_text()
+        print(f"✓ Получен ответ от бэкенда, статус: {status_text}")
+        # Теперь ожидаем только 200
+        assert status_text == "200", f"Ожидали статус 200, получили: {status_text}"
+        print(f"✓ Бэкенд вернул успешный ответ - OAuth2 Proxy работает корректно")
         
         # Финальный скриншот
         screenshot_path = "/tmp/oauth2_proxy_full_e2e.png"
