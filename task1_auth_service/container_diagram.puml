@@ -1,0 +1,75 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+' Подключаем локальные логотипы
+!define LOGOS_PATH logos
+
+AddElementTag("third-party", $bgColor="#f5f5f5", $borderColor="DarkGray", $fontColor="Black", $legendText="Компоненты сторонних производителей")
+AddElementTag("auth-service", $bgColor="#fff5f5", $borderColor="Red", $fontColor="Black")
+AddBoundaryTag("auth-boundary", $bgColor="white", $borderColor="Red", $fontColor="Red", $borderStyle="solid")
+
+LAYOUT_WITH_LEGEND()
+
+title BionicPro: упрощённая диаграмма контейнеров
+
+
+Person_Ext(prothetic_user, "Пилот протеза", "")
+Person_Ext(customer, "Покупатель протеза", "")
+Person(operator, "Оператор производства")
+
+System_Boundary(frontend, "Frontend Components") {
+    Container(prothesis_chip, "Программа в чипе протеза", "", "")
+    Container(prothesis_phone_app, "Мобильное приложение протеза", "", "")
+    Container(internet_shop_frontend, "Фронтэнд интернет-магазина", "", $tags="third-party")
+    Container(crm_frontend, "Фронтэнд CRM", $tags="third-party")
+    Container(keycloak_frontend, "Фронтэнд Keycloak", "", $tags="auth-service", $sprite="img:logos/logo-keycloak.png{scale=0.3}")
+}
+
+' User-Frontend Relationships
+prothetic_user ---> prothesis_chip
+customer ---> internet_shop_frontend: Выбор протеза, заказ, оплата
+
+
+System_Boundary(internal_services, "Internal Services") {
+
+    System_Boundary(auth_and_proxy_services, "Сервисы авторизации и проксирования", $tags="auth-boundary"){
+        Container(ingress_proxy, "Ingress Proxy", "istio/envoy", $tags="third-party", $sprite="img:logos/istio.png{scale=0.3}")
+        Container(keycloak_backend, "Бэкэнд Keycloak", "keycloak", $tags="auth-service", $sprite="img:logos/logo-keycloak.png{scale=0.3}")
+        ContainerDb(keycloak_db, "БД Keycloak", "postgres", $tags="third-party", $sprite="img:logos/postgresql.png{scale=0.3}")
+        Container(oauth2_proxy, "oauth2-proxy", "", $tags="auth-service", $sprite="img:logos/oauth2-proxy.png{scale=0.3}")
+
+        ingress_proxy --> oauth2_proxy: Запрос токенов для выставления JWT
+        keycloak_backend --> keycloak_db
+        oauth2_proxy --> keycloak_backend
+        oauth2_proxy --> keycloak_frontend
+        prothesis_phone_app --> ingress_proxy
+        prothesis_chip --> ingress_proxy
+        crm_frontend --> ingress_proxy
+
+        prothetic_user --> keycloak_frontend
+        customer --> keycloak_frontend
+        operator --> keycloak_frontend
+    }
+
+    System_Boundary(backend_services, "Основные бэкэнд-сервисы") {
+        Container(bionicpro_backend_api, BionicPro Backend API, "Основной бэкэнд-сервис BionicPro")
+        Container(internet_shop_api, "Shop API", $tags=third-party)
+        Container(crm_api, "CRM API", $tags=third-party)
+    }
+
+    ingress_proxy --> bionicpro_backend_api
+    ingress_proxy --> crm_api
+    ingress_proxy --> internet_shop_api
+}
+
+System_Boundary(external_auth_services, "Внешние сервисы аутентификации и авторизации", $tags="auth-boundary"){
+    Container_Ext(yandex_oauth2, "OAuth 2.0 от Яндекса", "")
+    Container_Ext(ldap_service, "Внешние LDAP-сервисы", "")
+    Container_Ext(google_authenticator, "Google Authenticator для MFA", "")
+    keycloak_backend ---> yandex_oauth2
+    keycloak_backend ---> ldap_service
+    keycloak_backend ---> google_authenticator
+}
+
+
+@enduml
