@@ -58,6 +58,20 @@ services:
       - "8081:80"
     depends_on:
       - openldap-zambia
+  
+  # Redis для хранения сессий OAuth2-proxy
+  redis:
+    image: redis:7-alpine  # Используем легковесную alpine версию
+    command: redis-server --appendonly yes  # Включаем persistence (AOF)
+    ports:
+      - "6379:6379"  # Стандартный порт Redis
+    volumes:
+      - redis-data:/data  # Персистентное хранилище для данных Redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]  # Проверка доступности Redis
+      interval: 5s
+      timeout: 3s
+      retries: 5
   # OAuth2 Proxy как reverse proxy для фронтенда и бэкенда
 #  oauth2-proxy:
 #    image: quay.io/oauth2-proxy/oauth2-proxy:latest  # Используем последнюю версию
@@ -107,3 +121,6 @@ services:
       REACT_APP_KEYCLOAK_URL: http://localhost:8080
       REACT_APP_KEYCLOAK_REALM: reports-realm
       REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+
+volumes:
+  redis-data:  # Volume для персистентного хранения данных Redis
