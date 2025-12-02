@@ -1,0 +1,277 @@
+# Микросервисы BionicPro
+
+Два микросервиса для платформы BionicPro: CRM API и Telemetry API.
+
+## Обзор
+
+### CRM API
+**Порт:** 3001  
+**База данных:** PostgreSQL (порт 5444)  
+**Назначение:** Регистрация пользователей интернет-магазина бионических протезов
+
+### Telemetry API
+**Порт:** 3001  
+**База данных:** PostgreSQL (порт 5445)  
+**Назначение:** Сбор телеметрии с EMG-сенсоров бионических протезов
+
+## Быстрый старт
+
+### 1. Установка зависимостей
+
+```bash
+cd /home/felix/Projects/yandex_swa_pro/architecture-bionicpro
+uv pip install -e .
+```
+
+### 2. Запуск баз данных
+
+```bash
+# Запуск обеих БД
+docker compose up -d crm_db telemetry_db
+
+# Проверка статуса
+docker compose ps
+```
+
+### 3. Запуск микросервисов
+
+#### Вариант A: Запуск в отдельных терминалах
+
+**Терминал 1 — CRM API:**
+```bash
+uv run python crm_api/main.py
+```
+
+**Терминал 2 — Telemetry API:**
+```bash
+uv run python telemetry_api/main.py
+```
+
+#### Вариант B: Запуск в фоне
+
+```bash
+# CRM API
+uv run python crm_api/main.py > crm_api.log 2>&1 &
+
+# Telemetry API
+uv run python telemetry_api/main.py > telemetry_api.log 2>&1 &
+```
+
+### 4. Проверка работоспособности
+
+```bash
+# CRM API
+curl http://localhost:3001/health
+
+# Telemetry API
+curl http://localhost:3002/health
+```
+
+## Запуск тестов
+
+### Все тесты сразу
+```bash
+uv run pytest crm_api/test_crm_api.py telemetry_api/test_telemetry_api.py -v
+```
+
+### Только CRM API
+```bash
+uv run pytest crm_api/test_crm_api.py -v
+```
+
+### Только Telemetry API
+```bash
+uv run pytest telemetry_api/test_telemetry_api.py -v
+```
+
+## Примеры использования
+
+### CRM API — Регистрация пользователя
+
+```bash
+curl -X POST http://localhost:3001/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Gérard Kikoïne",
+    "email": "gerard.kikoine@example.fr",
+    "age": 75,
+    "gender": "Male",
+    "country": "France"
+  }'
+```
+
+**Ответ:**
+```json
+{
+  "id": 1,
+  "name": "Gérard Kikoïne",
+  "email": "gerard.kikoine@example.fr",
+  "age": 75,
+  "gender": "Male",
+  "country": "France",
+  "address": null,
+  "phone": null,
+  "registered_at": "2025-11-18T11:30:00.000000Z"
+}
+```
+
+### Telemetry API — Отправка телеметрии
+
+```bash
+curl -X POST http://localhost:3002/telemetry \
+  -H "Content-Type: application/json" \
+  -d '{
+    "events": [
+      {
+        "user_id": 512,
+        "prosthesis_type": "arm",
+        "muscle_group": "Biceps",
+        "signal_frequency": 200,
+        "signal_duration": 1000,
+        "signal_amplitude": 3.5,
+        "created_ts": "2025-01-01T12:00:00Z"
+      }
+    ]
+  }'
+```
+
+**Ответ:**
+```json
+[
+  {
+    "id": 1,
+    "user_id": 512,
+    "prosthesis_type": "arm",
+    "muscle_group": "Biceps",
+    "signal_frequency": 200,
+    "signal_duration": 1000,
+    "signal_amplitude": 3.5,
+    "event_timestamp": "2025-01-01T12:00:00Z",
+    "saved_ts": "2025-11-18T11:30:00.000000Z"
+  }
+]
+```
+
+## Структура проекта
+
+```
+architecture-bionicpro/
+├── crm_api/
+│   ├── __init__.py
+│   ├── main.py                 # CRM API сервер
+│   ├── test_crm_api.py         # Тесты CRM API
+│   ├── README.md               # Документация CRM API
+│   └── crm-db/                 # Скрипты инициализации БД
+│       ├── init.sql
+│       └── crm.csv
+├── telemetry_api/
+│   ├── __init__.py
+│   ├── main.py                 # Telemetry API сервер
+│   ├── test_telemetry_api.py   # Тесты Telemetry API
+│   └── README.md               # Документация Telemetry API
+├── docker-compose.yaml         # Конфигурация БД
+├── pyproject.toml              # Зависимости проекта
+└── MICROSERVICES_README.md     # Этот файл
+```
+
+## Технологический стек
+
+- **Python 3.12+**
+- **FastAPI** — веб-фреймворк
+- **SQLModel** — ORM (SQLAlchemy + Pydantic)
+- **PostgreSQL 14** — база данных
+- **pytest** — тестирование
+- **uv** — управление зависимостями
+
+## Конфигурация баз данных
+
+### CRM DB
+- **Host:** localhost
+- **Port:** 5444
+- **Database:** crm_db
+- **User:** crm_user
+- **Password:** crm_password
+
+### Telemetry DB
+- **Host:** localhost
+- **Port:** 5445
+- **Database:** telemetry_db
+- **User:** telemetry_user
+- **Password:** telemetry_password
+
+## Остановка сервисов
+
+### Остановка API
+```bash
+# Найти процессы
+ps aux | grep "crm_api\|telemetry_api"
+
+# Остановить по PID
+kill <PID>
+```
+
+### Остановка баз данных
+```bash
+# Остановка с сохранением данных
+docker compose stop crm_db telemetry_db
+
+# Остановка с удалением volumes (очистка данных)
+docker compose down -v crm_db telemetry_db
+```
+
+## Результаты тестирования
+
+### CRM API — 8 тестов ✅
+- ✅ Проверка работоспособности
+- ✅ Регистрация Жерара Кикоина
+- ✅ Регистрация Бриджит Ляэ
+- ✅ Регистрация Сильвии Бурдон
+- ✅ Регистрация Альбана Сере
+- ✅ Проверка уникальности email
+- ✅ Регистрация с минимальными данными
+- ✅ Валидация обязательных полей
+
+### Telemetry API — 8 тестов ✅
+- ✅ Проверка работоспособности
+- ✅ Добавление одного события
+- ✅ Добавление нескольких событий
+- ✅ Валидация пустого списка
+- ✅ Разные типы протезов
+- ✅ Автоматическая установка saved_ts
+- ✅ Валидация обязательных полей
+- ✅ Пакетная загрузка 100 событий
+
+**Итого: 16/16 тестов прошли успешно** 🎉
+
+## Особенности реализации
+
+### Общие
+- ✅ Использование **SQLModel** для минимизации дублирования кода
+- ✅ Все временные метки в **UTC**
+- ✅ Подробные **комментарии на русском языке**
+- ✅ Поддержка **CORS**
+- ✅ Логирование всех SQL-запросов
+
+### CRM API
+- ✅ Уникальность email с индексом
+- ✅ Автоматическая установка registered_at
+- ✅ Валидация обязательных полей
+
+### Telemetry API
+- ✅ Пакетная обработка событий
+- ✅ Два временных поля (created_ts и saved_ts)
+- ✅ Транзакционное сохранение пакетов
+
+## Дополнительная документация
+
+- [CRM API README](crm_api/README.md) — подробная документация CRM API
+- [Telemetry API README](telemetry_api/README.md) — подробная документация Telemetry API
+
+## Поддержка
+
+При возникновении проблем:
+
+1. Проверьте логи API
+2. Проверьте статус БД: `docker compose ps`
+3. Проверьте логи БД: `docker compose logs crm_db telemetry_db`
+4. Запустите тесты для диагностики
